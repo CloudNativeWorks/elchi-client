@@ -1,0 +1,27 @@
+server:
+  host: "" # Main server address
+  port: 80 # Main server port
+  tls: false # Set to true if you are using TLS on main server
+  token: "xxxx-xxxx-xxxx-xxxx" # Get from Elchi
+  timeout: "30s"
+
+client:
+  name: "client-1" # Set to the name of the machine
+
+logging:
+  level: "info" # Set to "debug" for debugging
+  format: "json"
+  modules:
+    client: "info"
+    grpc: "info"
+    command: "info"
+    frr: "info"
+    network: "info"
+    filesystem: "info"
+    systemd: "info"
+    statistics: "info"
+
+metadata:
+  environment: "production" # Set to the environment of the machine
+  region: "us-east-1" # Set to the region of the machine
+  role: "client" # Set to the role of the machine
