@@ -694,8 +694,10 @@ Cmnd_Alias ELCHI_CMDS = \
  /usr/bin/tee /etc/systemd/system/elchi-*.service, \
  /usr/bin/tee /etc/netplan/99-elchi-*.yaml, \
  /usr/bin/tee /etc/netplan/99-elchi-*.yaml.backup, \
+ /usr/bin/tee /etc/netplan/90-*.yaml, \
  /usr/bin/chmod 0600 /etc/netplan/99-elchi-*.yaml, \
  /usr/bin/chmod 0600 /etc/netplan/99-elchi-*.yaml.backup, \
+ /usr/bin/chmod 0600 /etc/netplan/90-*.yaml, \
  /usr/bin/netplan generate, \
  /usr/bin/netplan apply, \
  /usr/bin/netplan try, \
