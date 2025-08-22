@@ -147,39 +147,29 @@ func (cm *ConfigManager) generateConfigCommands(config *client.BgpConfig) ([]str
 	if config.GracefulRestartEnabled {
 		commands = append(commands, "bgp graceful-restart")
 		
-		// Graceful restart timer
+		// Graceful restart timer (only set if provided)
 		if config.GracefulRestartTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart restart-time %d", config.GracefulRestartTime))
-		} else {
-			commands = append(commands, "no bgp graceful-restart restart-time")
 		}
 		
-		// Stale path time
+		// Stale path time (only set if provided)
 		if config.GracefulStalePathTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart stalepath-time %d", config.GracefulStalePathTime))
-		} else {
-			commands = append(commands, "no bgp graceful-restart stalepath-time")
 		}
 		
-		// Route selection defer time
+		// Route selection defer time (only set if provided)
 		if config.SelectDeferTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart select-defer-time %d", config.SelectDeferTime))
-		} else {
-			commands = append(commands, "no bgp graceful-restart select-defer-time")
 		}
 		
-		// RIB stale time
+		// RIB stale time (only set if provided)
 		if config.RibStaleTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart rib-stale-time %d", config.RibStaleTime))
-		} else {
-			commands = append(commands, "no bgp graceful-restart rib-stale-time")
 		}
 		
 		// Preserve forwarding state
 		if config.PreserveForwardingState {
 			commands = append(commands, "bgp graceful-restart preserve-fw-state")
-		} else {
-			commands = append(commands, "no bgp graceful-restart preserve-fw-state")
 		}
 	} else if config.GracefulRestartDisable {
 		// Explicitly disable graceful restart
