@@ -143,6 +143,49 @@ func (cm *ConfigManager) generateConfigCommands(config *client.BgpConfig) ([]str
 		commands = append(commands, "no bgp always-compare-med")
 	}
 
+	// Graceful Restart Configuration
+	if config.GracefulRestartEnabled {
+		commands = append(commands, "bgp graceful-restart")
+		
+		// Graceful restart timer
+		if config.GracefulRestartTime > 0 {
+			commands = append(commands, fmt.Sprintf("bgp graceful-restart restart-time %d", config.GracefulRestartTime))
+		} else {
+			commands = append(commands, "no bgp graceful-restart restart-time")
+		}
+		
+		// Stale path time
+		if config.GracefulStalePathTime > 0 {
+			commands = append(commands, fmt.Sprintf("bgp graceful-restart stalepath-time %d", config.GracefulStalePathTime))
+		} else {
+			commands = append(commands, "no bgp graceful-restart stalepath-time")
+		}
+		
+		// Route selection defer time
+		if config.SelectDeferTime > 0 {
+			commands = append(commands, fmt.Sprintf("bgp graceful-restart select-defer-time %d", config.SelectDeferTime))
+		} else {
+			commands = append(commands, "no bgp graceful-restart select-defer-time")
+		}
+		
+		// RIB stale time
+		if config.RibStaleTime > 0 {
+			commands = append(commands, fmt.Sprintf("bgp graceful-restart rib-stale-time %d", config.RibStaleTime))
+		} else {
+			commands = append(commands, "no bgp graceful-restart rib-stale-time")
+		}
+		
+		// Preserve forwarding state
+		if config.PreserveForwardingState {
+			commands = append(commands, "bgp graceful-restart preserve-fw-state")
+		} else {
+			commands = append(commands, "no bgp graceful-restart preserve-fw-state")
+		}
+	} else if config.GracefulRestartDisable {
+		// Explicitly disable graceful restart
+		commands = append(commands, "no bgp graceful-restart")
+	}
+
 	// Enter address-family ipv4 unicast
 	commands = append(commands, "address-family ipv4 unicast")
 
@@ -304,6 +347,46 @@ func (cm *ConfigManager) parseGlobalConfig(config *client.BgpConfig) error {
 		}
 		if strings.Contains(line, "redistribute local") {
 			config.RedistributeLocal = true
+		}
+
+		// Parse graceful restart
+		if line == "bgp graceful-restart" {
+			config.GracefulRestartEnabled = true
+		}
+		if strings.HasPrefix(line, "bgp graceful-restart restart-time ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				if restartTime, err := strconv.ParseUint(parts[3], 10, 32); err == nil {
+					config.GracefulRestartTime = uint32(restartTime)
+				}
+			}
+		}
+		if strings.HasPrefix(line, "bgp graceful-restart stalepath-time ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				if staleTime, err := strconv.ParseUint(parts[3], 10, 32); err == nil {
+					config.GracefulStalePathTime = uint32(staleTime)
+				}
+			}
+		}
+		if strings.HasPrefix(line, "bgp graceful-restart select-defer-time ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				if deferTime, err := strconv.ParseUint(parts[3], 10, 32); err == nil {
+					config.SelectDeferTime = uint32(deferTime)
+				}
+			}
+		}
+		if strings.HasPrefix(line, "bgp graceful-restart rib-stale-time ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				if ribTime, err := strconv.ParseUint(parts[3], 10, 32); err == nil {
+					config.RibStaleTime = uint32(ribTime)
+				}
+			}
+		}
+		if line == "bgp graceful-restart preserve-fw-state" {
+			config.PreserveForwardingState = true
 		}
 	}
 

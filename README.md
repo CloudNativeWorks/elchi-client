@@ -1,101 +1,125 @@
 # Elchi Client
 
-A professional Go client that connects to a remote server via GRPC and executes commands.
+**Elchi Client** is an enterprise-level network management client that connects to remote servers via gRPC protocol to manage FRR routing, network configuration, service deployment, and monitoring operations.
 
-## Features
+## 🚀 Key Features
 
-- GRPC connectivity to a remote server
-- Configurable settings (YAML, environment variables)
-- Command execution
-- Health check
-- Automatic reconnection
+- **Secure gRPC Communication**: TLS-enabled client-server communication
+- **FRR (Free Range Routing) Management**: BGP neighbor and route policy management
+- **Network Configuration**: Netplan interface and route management
+- **Service Deployment**: Systemd service control and monitoring
+- **Circuit Breaker Pattern**: Automatic reconnection and failure recovery
+- **Performance Optimized**: Load balancer and proxy workload optimizations
 
-## Requirements
+## 📋 Requirements
 
-- Go 1.19 or higher
-- Protocol Buffers (protoc)
+- **Operating System**: Ubuntu 24.04 LTS (minimum)
+- **Go**: 1.21 or higher (for development)
+- **System**: Root privileges for installation
+- **Network**: Internet access for dependencies
 
-## Installation
+## 🔧 Installation
 
-### Dependencies
-
-```bash
-go mod tidy
-```
-
-### Building
+### Quick Installation (Recommended)
 
 ```bash
-go build -o bin/elchi-client ./cmd/client
+# Download and run bootstrap script
+curl -fsSL https://raw.githubusercontent.com/CloudNativeWorks/elchi-client/main/elchi-bootstrap.sh | sudo bash
+
+# For BGP/FRR support
+curl -fsSL https://raw.githubusercontent.com/CloudNativeWorks/elchi-client/main/elchi-bootstrap.sh | sudo bash -s -- --enable-bgp
 ```
 
-## Usage
+## ⚙️ Configuration
 
-### Configuration
-
-Configuration can be specified in the following ways (in order of precedence):
-
-1. Command line arguments
-2. Environment variables
-3. Configuration file
-
-#### Configuration File
+### Configuration File (`/etc/elchi/config.yaml`)
 
 ```yaml
 server:
-  host: "0.0.0.0"
-  port: 50051
+  host: "backend.elchi.io"
+  port: 443
+  tls: true
+  token: "your-authentication-token"
   timeout: "30s"
 
 logging:
   level: "info"
   format: "json"
-  output_path: "stdout"
+  modules:
+    client: "info"
+    grpc: "info"
+    frr: "info"
+    network: "debug"
 
 client:
-  id: ""  # Will be auto-generated as UUID if empty
-  version: "1.0.0"
+  name: "production-client-01"
 
 metadata:
-  environment: "development"
+  environment: "production"
   region: "eu-west-1"
-  role: "client"
+  role: "edge-router"
 ```
 
-#### Environment Variables
+## 🚀 Usage
 
-All configuration values can be specified as environment variables with the `ELCHI_` prefix. For example:
-
-```
-ELCHI_CLIENT_CONNECT_ADDRESS=10.0.0.1
-ELCHI_CLIENT_CONNECT_PORT=50052
-ELCHI_LOGGING_LEVEL=debug
-```
-
-### Running
+### Start Client Service
 
 ```bash
-# Run with default configuration
-./bin/elchi-client
+# Start as systemd service (recommended)
+sudo systemctl start elchi-client
+sudo systemctl enable elchi-client
 
-# Run with a specific configuration file
-./bin/elchi-client -config config.yaml
+# Check status
+sudo systemctl status elchi-client
 
-# Specify connection address
-./bin/elchi-client -address 10.0.0.1 -port 50052
-
-# Specify log level
-./bin/elchi-client -log-level debug
+# View logs
+sudo journalctl -u elchi-client -f
 ```
 
-## Development
+## 🐛 Troubleshooting
 
-### Generating Go code from Proto
+### Common Issues
+
+**Connection Failed**
+```bash
+# Check network connectivity
+ping backend.elchi.io
+telnet backend.elchi.io 443
+
+# Verify TLS configuration
+openssl s_client -connect backend.elchi.io:443
+```
+
+### Log Analysis
+
+Enable debug logging to investigate issues:
 
 ```bash
-protoc --go_out=internal/client/ --go-grpc_out=internal/client/ api/proto/client.proto
+# Edit config.yaml
+logging:
+  level: "debug"
+  modules:
+    client: "debug"
+    grpc: "debug"
+
+# Or use environment variable
+ELCHI_LOGGING_LEVEL=debug systemctl restart elchi-client
 ```
 
-## License
+## 📞 Support
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+- **Issues**: [GitHub Issues](https://github.com/CloudNativeWorks/elchi-client/issues)
+- **License**: MIT License
+
+## 🔄 Updates
+
+The client automatically downloads the latest binary during bootstrap. For manual updates:
+
+```bash
+# Download latest release
+curl -fsSL https://github.com/CloudNativeWorks/elchi-client/releases/latest/download/elchi-client -o /etc/elchi/bin/elchi-client
+chmod 755 /etc/elchi/bin/elchi-client
+
+# Restart service
+sudo systemctl restart elchi-client
+``` 

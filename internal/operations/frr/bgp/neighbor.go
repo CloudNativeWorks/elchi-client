@@ -804,6 +804,59 @@ func (nm *NeighborManager) processBooleanFlags(builder *NeighborCommandBuilder, 
 	nm.processBooleanFlag(builder, "next-hop-self", current.NextHopSelf, desired.NextHopSelf, true)
 	nm.processBooleanFlag(builder, "soft-reconfiguration inbound", current.SoftReconfiguration, desired.SoftReconfiguration, true)
 	nm.processBooleanFlag(builder, "shutdown", current.Shutdown, desired.Shutdown, false)
+	
+	// Process graceful restart flags
+	nm.processGracefulRestartFlags(builder, current, desired)
+}
+
+func (nm *NeighborManager) processGracefulRestartFlags(builder *NeighborCommandBuilder, current, desired *client.BgpNeighbor) {
+	// Check if graceful restart configuration changed
+	if current.GracefulRestart != desired.GracefulRestart {
+		if desired.GracefulRestart {
+			builder.AddCommand(NeighborCommand{
+				command:         "capability graceful-restart",
+				isAddressFamily: false,
+			})
+		} else {
+			builder.AddCommand(NeighborCommand{
+				action:          "no",
+				command:         "capability graceful-restart",
+				isAddressFamily: false,
+			})
+		}
+	}
+	
+	// Check if graceful restart helper mode changed
+	if current.GracefulRestartHelper != desired.GracefulRestartHelper {
+		if desired.GracefulRestartHelper {
+			builder.AddCommand(NeighborCommand{
+				command:         "capability graceful-restart-helper",
+				isAddressFamily: false,
+			})
+		} else {
+			builder.AddCommand(NeighborCommand{
+				action:          "no",
+				command:         "capability graceful-restart-helper",
+				isAddressFamily: false,
+			})
+		}
+	}
+	
+	// Check if graceful restart disable changed
+	if current.GracefulRestartDisable != desired.GracefulRestartDisable {
+		if desired.GracefulRestartDisable {
+			builder.AddCommand(NeighborCommand{
+				command:         "capability graceful-restart-disable",
+				isAddressFamily: false,
+			})
+		} else {
+			builder.AddCommand(NeighborCommand{
+				action:          "no",
+				command:         "capability graceful-restart-disable",
+				isAddressFamily: false,
+			})
+		}
+	}
 }
 
 func (nm *NeighborManager) processBooleanFlag(builder *NeighborCommandBuilder, command string, currentValue, desiredValue bool, isAddressFamily bool) {
@@ -1243,6 +1296,15 @@ func (nm *NeighborManager) ParseNeighborDetails(peerIP string, asNumber uint32) 
 				if val, err := strconv.ParseUint(parts[3], 10, 32); err == nil {
 					neighbor.AllowasIn = uint32(val)
 				}
+			}
+		case strings.Contains(line, "capability graceful-restart-disable"):
+			neighbor.GracefulRestartDisable = true
+		case strings.Contains(line, "capability graceful-restart-helper"):
+			neighbor.GracefulRestartHelper = true
+		case strings.Contains(line, "capability graceful-restart"):
+			// Make sure this is not disable or helper
+			if !strings.Contains(line, "disable") && !strings.Contains(line, "helper") {
+				neighbor.GracefulRestart = true
 			}
 		case strings.Contains(line, "weight"):
 			if val, err := strconv.ParseUint(parts[3], 10, 32); err == nil {
