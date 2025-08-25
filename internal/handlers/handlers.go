@@ -37,3 +37,7 @@ func (h *NetworkCommandHandler) Handle(cmd *client.Command) *client.CommandRespo
 func (h *FrrCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
 	return h.services.FrrService(cmd)
 }
+
+func (h *EnvoyVersionCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
+	return h.services.EnvoyVersionService(cmd)
+}

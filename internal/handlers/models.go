@@ -53,3 +53,7 @@ type NetworkCommandHandler struct {
 type FrrCommandHandler struct {
 	services *services.Services
 }
+
+type EnvoyVersionCommandHandler struct {
+	services *services.Services
+}
