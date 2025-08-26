@@ -1,0 +1,90 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.1'
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y build-essential pkg-config libsystemd-dev
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Build for Linux AMD64
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        CGO_ENABLED=1 go build -tags systemd -ldflags="-w -s -X main.version=$VERSION" -o elchi-client main.go
+
+    - name: Create checksum
+      run: |
+        sha256sum elchi-client > elchi-client.sha256
+
+    - name: Prepare config file
+      run: |
+        cp config_template.yaml config.yaml
+
+    - name: Create and push tag
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag "v$VERSION"
+        git push origin "v$VERSION"
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          elchi-client
+          elchi-client.sha256
+          elchi-install.sh
+          config.yaml
+          LICENSE
+        tag_name: v${{ github.event.inputs.version }}
+        name: Elchi Client v${{ github.event.inputs.version }}
+        body: |
+          ## Elchi Client v${{ github.event.inputs.version }}
+          
+          ### Download:
+          
+          **Linux AMD64:**
+          - `elchi-client`
+          
+          ### Installation:
+          
+          ```bash
+          # Download and install
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/elchi-install.sh
+          sudo bash elchi-install.sh
+          ```
+          
+          ### Verification:
+          
+          ```bash
+          sha256sum -c elchi-client.sha256
+          ```
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
