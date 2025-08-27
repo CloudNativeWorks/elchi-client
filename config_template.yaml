@@ -22,6 +22,4 @@ logging:
     statistics: "info"
 
 metadata:
-  environment: "production" # Set to the environment of the machine
-  region: "us-east-1" # Set to the region of the machine
-  role: "client" # Set to the role of the machine
+  environment: "production"

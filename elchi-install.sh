@@ -19,6 +19,13 @@ shopt -s inherit_errexit
 # Command line arguments
 ENABLE_FRR=false
 
+# Configuration parameters
+CLIENT_NAME=""
+SERVER_HOST=""
+SERVER_PORT=""
+SERVER_TLS=""
+SERVER_TOKEN=""
+
 # System users
 ELCHI_USER="elchi"
 ENVOY_USER="envoyuser"
@@ -92,31 +99,108 @@ cleanup_on_exit() {
 # COMMAND LINE ARGUMENT PARSING
 ###############################################################################
 
-for arg in "$@"; do
-  case $arg in
+while [[ $# -gt 0 ]]; do
+  case $1 in
     --enable-bgp)
       ENABLE_FRR=true
       shift
       ;;
+    --name=*)
+      CLIENT_NAME="${1#*=}"
+      shift
+      ;;
+    --host=*)
+      SERVER_HOST="${1#*=}"
+      shift
+      ;;
+    --port=*)
+      SERVER_PORT="${1#*=}"
+      shift
+      ;;
+    --tls=*)
+      SERVER_TLS="${1#*=}"
+      shift
+      ;;
+    --token=*)
+      SERVER_TOKEN="${1#*=}"
+      shift
+      ;;
     --help|-h)
-      echo "Usage: $0 [OPTIONS]"
+      echo "Usage: $0 --name=NAME --host=HOST --port=PORT --tls=true|false --token=TOKEN [OPTIONS]"
       echo ""
-      echo "Options:"
+      echo "Required Parameters:"
+      echo "  --name=NAME                Client name"
+      echo "  --host=HOST                Server host address"  
+      echo "  --port=PORT                Server port (1-65535)"
+      echo "  --tls=true|false           Enable TLS"
+      echo "  --token=TOKEN              Authentication token (min 8 chars)"
+      echo ""
+      echo "Optional Parameters:"
       echo "  --enable-bgp               Install and configure FRR routing"
       echo "  --help, -h                 Show this help message"
       echo ""
       echo "Examples:"
-      echo "  $0                                    # Basic installation only"
-      echo "  $0 --enable-bgp                      # With FRR routing"
+      echo "  $0 --name=web-server-01 --host=backend.elchi.io --port=443 --tls=true --token=your-token"
+      echo "  $0 --name=dev-client --host=10.0.0.1 --port=50051 --tls=false --token=dev-token"
+      echo "  $0 --enable-bgp --name=edge-router --host=controller.elchi.io --port=443 --tls=true --token=prod-token"
       exit 0
       ;;
     *)
-      echo "Unknown option: $arg"
+      echo "Unknown option: $1"
       echo "Use --help for usage information"
       exit 1
       ;;
   esac
 done
+
+# Validate required parameters
+info "🔍 Validating required configuration parameters"
+MISSING_PARAMS=()
+
+if [[ -z "$CLIENT_NAME" ]]; then
+  MISSING_PARAMS+=("--name")
+fi
+
+if [[ -z "$SERVER_HOST" ]]; then
+  MISSING_PARAMS+=("--host")
+fi
+
+if [[ -z "$SERVER_PORT" ]]; then
+  MISSING_PARAMS+=("--port")
+fi
+
+if [[ -z "$SERVER_TLS" ]]; then
+  MISSING_PARAMS+=("--tls")
+fi
+
+if [[ -z "$SERVER_TOKEN" ]]; then
+  MISSING_PARAMS+=("--token")
+fi
+
+if [[ ${#MISSING_PARAMS[@]} -gt 0 ]]; then
+  fail "❌ Missing required parameters: ${MISSING_PARAMS[*]}"
+  echo ""
+  echo "Example usage:"
+  echo "  $0 --name=web-server-01 --host=backend.elchi.io --port=443 --tls=true --token=your-token"
+  echo ""
+  echo "Use --help for full parameter list"
+  exit 1
+fi
+
+# Validate parameter values
+if [[ "$SERVER_TLS" != "true" && "$SERVER_TLS" != "false" ]]; then
+  fail "❌ Invalid --tls value: '$SERVER_TLS'. Must be 'true' or 'false'"
+fi
+
+if ! [[ "$SERVER_PORT" =~ ^[0-9]+$ ]] || [[ "$SERVER_PORT" -lt 1 ]] || [[ "$SERVER_PORT" -gt 65535 ]]; then
+  fail "❌ Invalid --port value: '$SERVER_PORT'. Must be a number between 1-65535"
+fi
+
+if [[ ${#SERVER_TOKEN} -lt 8 ]]; then
+  fail "❌ Invalid --token value: Token must be at least 8 characters long"
+fi
+
+ok "✅ All required parameters validated successfully"
 
 ###############################################################################
 # APT SOURCES CONFIGURATION
@@ -750,8 +834,50 @@ run mkdir -p "$ELCHI_BIN_DIR"
 run chown -R root:"$ELCHI_USER" "$ELCHI_DIR"
 run chmod 750 "$ELCHI_DIR" "$ELCHI_BIN_DIR"
 
-# Download config.yaml from latest GitHub release
-info "📥 Downloading config.yaml from latest GitHub release"
+# Create config.yaml with user-provided configuration
+info "📝 Creating config.yaml with provided configuration"
+
+info "🏷️  Client name: $CLIENT_NAME"
+info "🌐 Server: $SERVER_HOST:$SERVER_PORT (TLS: $SERVER_TLS)"
+info "🔑 Token: ${SERVER_TOKEN:0:8}..."
+
+# Create config.yaml from template
+cat > "$ELCHI_CONFIG" <<EOF
+server:
+  host: "$SERVER_HOST"
+  port: $SERVER_PORT
+  tls: $SERVER_TLS
+  token: "$SERVER_TOKEN"
+  timeout: "30s"
+
+client:
+  name: "$CLIENT_NAME"
+
+logging:
+  level: "info"
+  format: "json"
+  modules:
+    client: "info"
+    grpc: "info"
+    command: "info"
+    frr: "info"
+    network: "info"
+    filesystem: "info"
+    systemd: "info"
+    statistics: "info"
+
+metadata:
+  environment: "production"
+  region: "us-east-1"
+  role: "client"
+EOF
+
+run chown root:"$ELCHI_USER" "$ELCHI_CONFIG"
+run chmod 640 "$ELCHI_CONFIG"
+ok "✅ config.yaml created successfully"
+
+# Download elchi-client binary from latest GitHub release
+info "📥 Downloading elchi-client binary from latest GitHub release"
 GITHUB_REPO="CloudNativeWorks/elchi-client"
 LATEST_RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 
@@ -759,35 +885,28 @@ LATEST_RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
 LATEST_TAG=$(curl -s "$LATEST_RELEASE_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
 
 if [[ -n "$LATEST_TAG" ]]; then
-  CONFIG_DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_TAG/config.yaml"
   info "📦 Latest release: $LATEST_TAG"
-  info "🔗 Downloading from: $CONFIG_DOWNLOAD_URL"
   
-  TEMP_CONFIG="/tmp/elchi-config-download.yaml"
+  # Download elchi-client binary (architecture-specific)
   
-  if curl -fsSL --retry 3 --retry-delay 2 --max-time 30 "$CONFIG_DOWNLOAD_URL" -o "$TEMP_CONFIG"; then
-    if mv "$TEMP_CONFIG" "$ELCHI_CONFIG"; then
-      ok "✅ config.yaml downloaded successfully"
-      run chown root:"$ELCHI_USER" "$ELCHI_CONFIG"
-      run chmod 640 "$ELCHI_CONFIG"
-    else
-      warn "⚠️  Failed to move config.yaml to $ELCHI_CONFIG"
-      rm -f "$TEMP_CONFIG"
-      touch "$ELCHI_CONFIG"
-      chown root:"$ELCHI_USER" "$ELCHI_CONFIG"
-      chmod 640 "$ELCHI_CONFIG"
-    fi
-  else
-    warn "⚠️  Failed to download config.yaml from GitHub release, creating default"
-    rm -f "$TEMP_CONFIG"
-    touch "$ELCHI_CONFIG"
-    chown root:"$ELCHI_USER" "$ELCHI_CONFIG"
-    chmod 640 "$ELCHI_CONFIG"
-  fi
+  # Detect system architecture
+  SYSTEM_ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+  case "$SYSTEM_ARCH" in
+    "amd64"|"x86_64")
+      BINARY_SUFFIX="linux-amd64"
+      info "🏗️  Detected architecture: AMD64"
+      ;;
+    "arm64"|"aarch64")
+      BINARY_SUFFIX="linux-arm64"
+      info "🏗️  Detected architecture: ARM64"
+      ;;
+    *)
+      warn "⚠️  Unsupported architecture: $SYSTEM_ARCH, defaulting to AMD64"
+      BINARY_SUFFIX="linux-amd64"
+      ;;
+  esac
   
-  # Download elchi-client binary
-  info "📥 Downloading elchi-client binary from latest GitHub release"
-  BINARY_DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_TAG/elchi-client"
+  BINARY_DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_TAG/elchi-client-${BINARY_SUFFIX}"
   BINARY_PATH="$ELCHI_BIN_DIR/elchi-client"
   TEMP_BINARY="/tmp/elchi-client-download"
   
@@ -796,6 +915,36 @@ if [[ -n "$LATEST_TAG" ]]; then
   # Download to temp location first
   if curl -fsSL --retry 3 --retry-delay 2 --max-time 60 "$BINARY_DOWNLOAD_URL" -o "$TEMP_BINARY"; then
     info "✅ Binary downloaded to temp location"
+    
+    # Download and verify checksum
+    CHECKSUM_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_TAG/elchi-client-${BINARY_SUFFIX}.sha256"
+    TEMP_CHECKSUM="/tmp/elchi-client.sha256"
+    
+    info "🔐 Downloading checksum file for verification"
+    if curl -fsSL --retry 3 --retry-delay 2 --max-time 30 "$CHECKSUM_URL" -o "$TEMP_CHECKSUM"; then
+      # Extract expected checksum
+      EXPECTED_CHECKSUM=$(awk '{print $1}' "$TEMP_CHECKSUM")
+      
+      # Calculate actual checksum
+      if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL_CHECKSUM=$(sha256sum "$TEMP_BINARY" | awk '{print $1}')
+      elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL_CHECKSUM=$(shasum -a 256 "$TEMP_BINARY" | awk '{print $1}')
+      else
+        warn "⚠️  No checksum tool available, skipping verification"
+        ACTUAL_CHECKSUM="$EXPECTED_CHECKSUM"  # Skip verification
+      fi
+      
+      if [[ "$EXPECTED_CHECKSUM" == "$ACTUAL_CHECKSUM" ]]; then
+        ok "✅ Binary checksum verification passed"
+      else
+        fail "❌ Binary checksum verification failed! Expected: $EXPECTED_CHECKSUM, Got: $ACTUAL_CHECKSUM"
+      fi
+      
+      rm -f "$TEMP_CHECKSUM"
+    else
+      warn "⚠️  Failed to download checksum file, skipping verification"
+    fi
     
     # Move to final location with proper permissions
     if mv "$TEMP_BINARY" "$BINARY_PATH"; then
