@@ -54,24 +54,44 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24.1'
-
-    - name: Download dependencies
-      run: go mod download
-
-    - name: Build for Linux ARM64
+    - name: Build ARM64 binary with Docker
       run: |
         VERSION="${{ github.event.inputs.version }}"
-        CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -tags systemd -ldflags="-w -s -X main.version=$VERSION" -o elchi-client-linux-arm64 main.go
-      env:
-        PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
+        
+        # Create Dockerfile for ARM64 build
+        cat > Dockerfile.arm64 <<EOF
+        FROM --platform=linux/arm64 golang:1.24.1-bookworm
+        
+        # Install build dependencies
+        RUN apt-get update && apt-get install -y \\
+            build-essential \\
+            pkg-config \\
+            libsystemd-dev \\
+            && rm -rf /var/lib/apt/lists/*
+        
+        WORKDIR /build
+        COPY . .
+        
+        # Download dependencies and build
+        RUN go mod download
+        RUN CGO_ENABLED=1 go build -tags systemd -ldflags="-w -s -X main.version=$VERSION" -o elchi-client-linux-arm64 main.go
+        EOF
+        
+        # Build using Docker with ARM64 platform
+        docker build --platform linux/arm64 -f Dockerfile.arm64 -t elchi-arm64-builder .
+        
+        # Extract the binary from container
+        docker create --name temp-container elchi-arm64-builder
+        docker cp temp-container:/build/elchi-client-linux-arm64 ./elchi-client-linux-arm64
+        docker rm temp-container
+        
+        # Cleanup
+        docker rmi elchi-arm64-builder
+        rm Dockerfile.arm64
 
     - name: Create checksum
       run: |
-        sha256sum elchi-client-linux-arm64 > elchi-client-linux-arm64.sha256
+        shasum -a 256 elchi-client-linux-arm64 > elchi-client-linux-arm64.sha256
 
     - name: Upload Linux ARM64 artifacts
       uses: actions/upload-artifact@v4
