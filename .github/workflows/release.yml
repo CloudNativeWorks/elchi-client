@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build-linux-amd64:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
@@ -34,11 +34,64 @@ jobs:
     - name: Build for Linux AMD64
       run: |
         VERSION="${{ github.event.inputs.version }}"
-        CGO_ENABLED=1 go build -tags systemd -ldflags="-w -s -X main.version=$VERSION" -o elchi-client main.go
+        CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags systemd -ldflags="-w -s -X main.version=$VERSION" -o elchi-client-linux-amd64 main.go
 
     - name: Create checksum
       run: |
-        sha256sum elchi-client > elchi-client.sha256
+        sha256sum elchi-client-linux-amd64 > elchi-client-linux-amd64.sha256
+
+    - name: Upload Linux AMD64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-amd64
+        path: |
+          elchi-client-linux-amd64
+          elchi-client-linux-amd64.sha256
+
+  build-linux-arm64:
+    runs-on: self-hosted
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.1'
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Build for Linux ARM64
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -tags systemd -ldflags="-w -s -X main.version=$VERSION" -o elchi-client-linux-arm64 main.go
+      env:
+        PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
+
+    - name: Create checksum
+      run: |
+        sha256sum elchi-client-linux-arm64 > elchi-client-linux-arm64.sha256
+
+    - name: Upload Linux ARM64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-arm64
+        path: |
+          elchi-client-linux-arm64
+          elchi-client-linux-arm64.sha256
+
+  release:
+    needs: [build-linux-amd64, build-linux-arm64]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        merge-multiple: true
 
     - name: Prepare config file
       run: |
@@ -56,8 +109,10 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: |
-          elchi-client
-          elchi-client.sha256
+          elchi-client-linux-amd64
+          elchi-client-linux-amd64.sha256
+          elchi-client-linux-arm64
+          elchi-client-linux-arm64.sha256
           elchi-install.sh
           config.yaml
           LICENSE
@@ -69,20 +124,43 @@ jobs:
           ### Download:
           
           **Linux AMD64:**
-          - `elchi-client`
+          - `elchi-client-linux-amd64`
+          - `elchi-client-linux-amd64.sha256`
+          
+          **Linux ARM64:**
+          - `elchi-client-linux-arm64`
+          - `elchi-client-linux-arm64.sha256`
           
           ### Installation:
           
           ```bash
-          # Download and install
+          # Download and install (will auto-detect architecture)
           wget https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/elchi-install.sh
           sudo bash elchi-install.sh
+          ```
+          
+          ### Manual Installation:
+          
+          ```bash
+          # For AMD64
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/elchi-client-linux-amd64
+          sudo mv elchi-client-linux-amd64 /usr/local/bin/elchi-client
+          sudo chmod +x /usr/local/bin/elchi-client
+          
+          # For ARM64
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/elchi-client-linux-arm64
+          sudo mv elchi-client-linux-arm64 /usr/local/bin/elchi-client
+          sudo chmod +x /usr/local/bin/elchi-client
           ```
           
           ### Verification:
           
           ```bash
-          sha256sum -c elchi-client.sha256
+          # For AMD64
+          sha256sum -c elchi-client-linux-amd64.sha256
+          
+          # For ARM64
+          sha256sum -c elchi-client-linux-arm64.sha256
           ```
         draft: false
         prerelease: false
