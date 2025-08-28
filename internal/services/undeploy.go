@@ -99,6 +99,8 @@ func (s *Services) UndeployService(cmd *client.Command) *client.CommandResponse 
 				Service:           serviceName,
 				Network:           ifaceName,
 				DownstreamAddress: undeployReq.GetDownstreamAddress(),
+				Port:              undeployReq.GetPort(),
+				InterfaceId:       undeployReq.GetInterfaceId(),
 			},
 		},
 	}

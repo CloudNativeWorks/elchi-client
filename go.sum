@@ -8,6 +8,8 @@ github.com/CloudNativeWorks/elchi-proto v0.0.0-20250827204708-b94d264d3ab8 h1:ij
 github.com/CloudNativeWorks/elchi-proto v0.0.0-20250827204708-b94d264d3ab8/go.mod h1:Ueq8oq9fNnLZ/6I2JQKVu8npURk2T+Ts44x4o8VDlj0=
 github.com/CloudNativeWorks/elchi-proto v0.0.0-20250828082550-d14a4eeb975d h1:Dv4SJcnjyLPpsq+6ZD2OYbUcRAk4YEUFXXh827v9pkU=
 github.com/CloudNativeWorks/elchi-proto v0.0.0-20250828082550-d14a4eeb975d/go.mod h1:Ueq8oq9fNnLZ/6I2JQKVu8npURk2T+Ts44x4o8VDlj0=
+github.com/CloudNativeWorks/elchi-proto v0.0.0-20250828120044-aa03f5d687d5 h1:B8TlWzdlfDgmpv4hc/CcH9Hdag0Fvq0hrvWJQD2Hs00=
+github.com/CloudNativeWorks/elchi-proto v0.0.0-20250828120044-aa03f5d687d5/go.mod h1:Ueq8oq9fNnLZ/6I2JQKVu8npURk2T+Ts44x4o8VDlj0=
 github.com/coreos/go-systemd/v22 v22.5.0 h1:RrqgGjYQKalulkV8NGVIfkXQf6YYmOyiJKk8iXXhfZs=
 github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
 github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=

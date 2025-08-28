@@ -888,11 +888,6 @@ logging:
     filesystem: "info"
     systemd: "info"
     statistics: "info"
-
-metadata:
-  environment: "production"
-  region: "us-east-1"
-  role: "client"
 EOF
 
 run chown root:"$ELCHI_USER" "$ELCHI_CONFIG"

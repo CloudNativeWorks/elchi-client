@@ -53,11 +53,8 @@ logging:
 
 client:
   name: "production-client-01"
-
-metadata:
-  environment: "production"
-  region: "eu-west-1"
-  role: "edge-router"
+  cloud: "my-cloud"
+  bgp: false
 ```
 
 ## 🚀 Usage

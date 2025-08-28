@@ -232,9 +232,12 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 		Success:   true,
 		Result: &client.CommandResponse_Deploy{
 			Deploy: &client.ResponseDeploy{
-				Files:   bootstrapPath,
-				Service: servicePath,
-				Network: netplanPath,
+				Files:             bootstrapPath,
+				Service:           servicePath,
+				Network:           netplanPath,
+				DownstreamAddress: deployReq.DownstreamAddress,
+				Port:              deployReq.Port,
+				InterfaceId:       deployReq.InterfaceId,
 			},
 		},
 	}
