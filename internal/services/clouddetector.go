@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -72,15 +73,14 @@ func (cd *CloudDetector) DetectProvider(ctx context.Context) string {
 		return "azure"
 	}
 	
-	cd.log.Info("No cloud provider detected, using 'unknown'")
-	return "unknown"
+	cd.log.Info("No cloud provider detected, using 'other'")
+	return "other"
 }
 
 // GetMetadata returns metadata based on cloud name and detected provider
 func (cd *CloudDetector) GetMetadata(ctx context.Context, cloudName, detectedProvider string) map[string]string {
 	metadata := map[string]string{
 		"cloud_name": cloudName,
-		"provider":   detectedProvider,
 	}
 	
 	// If cloud is "other", don't fetch additional metadata
@@ -97,9 +97,7 @@ func (cd *CloudDetector) GetMetadata(ctx context.Context, cloudName, detectedPro
 		cd.log.Debug("Fetching OpenStack metadata...")
 		if osmeta := cd.getOpenStackMetadata(ctx); osmeta != nil {
 			cd.log.Debugf("Retrieved %d OpenStack metadata fields", len(osmeta))
-			for k, v := range osmeta {
-				metadata[k] = v
-			}
+			maps.Copy(metadata, osmeta)
 		}
 	case "aws":
 		cd.log.Debug("AWS detected, adding basic metadata")
@@ -108,17 +106,13 @@ func (cd *CloudDetector) GetMetadata(ctx context.Context, cloudName, detectedPro
 		cd.log.Debug("Fetching GCP metadata...")
 		if gcpmeta := cd.getGCPMetadata(ctx); gcpmeta != nil {
 			cd.log.Debugf("Retrieved %d GCP metadata fields", len(gcpmeta))
-			for k, v := range gcpmeta {
-				metadata[k] = v
-			}
+			maps.Copy(metadata, gcpmeta)
 		}
 	case "azure":
 		cd.log.Debug("Fetching Azure metadata...")
 		if azmeta := cd.getAzureMetadata(ctx); azmeta != nil {
 			cd.log.Debugf("Retrieved %d Azure metadata fields", len(azmeta))
-			for k, v := range azmeta {
-				metadata[k] = v
-			}
+			maps.Copy(metadata, azmeta)
 		}
 	}
 	
