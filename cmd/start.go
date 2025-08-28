@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -18,6 +17,7 @@ import (
 	grpcClient "github.com/CloudNativeWorks/elchi-client/internal/grpc"
 	"github.com/CloudNativeWorks/elchi-client/internal/handlers"
 	"github.com/CloudNativeWorks/elchi-client/internal/initializer"
+	"github.com/CloudNativeWorks/elchi-client/internal/services"
 	"github.com/CloudNativeWorks/elchi-client/pkg/helper"
 	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
@@ -255,6 +255,28 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 		return nil, fmt.Errorf("failed to get client ID: %v", err)
 	}
 
+	// Validate required client configuration
+	if Cfg.Client.Name == "" {
+		return nil, fmt.Errorf("client name is required in configuration")
+	}
+	
+	if Cfg.Client.BGP == nil {
+		return nil, fmt.Errorf("client bgp capability is required in configuration (must be true or false)")
+	}
+	
+	// Set default cloud value if empty
+	if Cfg.Client.Cloud == "" {
+		Cfg.Client.Cloud = "other"
+	}
+
+	// Detect cloud provider and get metadata
+	cloudDetector := services.NewCloudDetector()
+	detectedProvider := cloudDetector.DetectProvider(context.Background())
+	cloudMetadata := cloudDetector.GetMetadata(context.Background(), Cfg.Client.Cloud, detectedProvider)
+	
+	// Log detected cloud information
+	m.logger.Infof("Cloud detection - User defined: %s, Auto detected: %s", Cfg.Client.Cloud, detectedProvider)
+
 	hostname, _ := os.Hostname()
 	clientInfo := &client.RegisterRequest{
 		ClientId:  clientID,
@@ -265,6 +287,9 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 		Os:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
 		ProjectId: config.ExtractProjectIDFromToken(Cfg.Server.Token),
+		Bgp:       *Cfg.Client.BGP,
+		Cloud:     Cfg.Client.Cloud,    // User-defined cloud name from config
+		Provider:  detectedProvider,    // Auto-detected provider (aws, gcp, azure, openstack)
 		Kernel: func() string {
 			out, err := exec.Command("uname", "-r").Output()
 			if err != nil {
@@ -272,12 +297,11 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 			}
 			return strings.TrimSpace(string(out))
 		}(),
-		Metadata: map[string]string{
-			"startTime": time.Now().Format(time.RFC3339),
-		},
+		Metadata: cloudMetadata, // Use auto-detected cloud metadata instead of config metadata
 	}
 
-	maps.Copy(clientInfo.Metadata, Cfg.Metadata)
+	// Add start time to metadata
+	clientInfo.Metadata["startTime"] = time.Now().Format(time.RFC3339)
 
 	// Set client ID in GRPC client for metadata
 	grpcConn.SetClientID(clientID)

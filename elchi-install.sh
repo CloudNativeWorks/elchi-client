@@ -25,6 +25,7 @@ SERVER_HOST=""
 SERVER_PORT=""
 SERVER_TLS=""
 SERVER_TOKEN=""
+CLIENT_CLOUD=""
 
 # System users
 ELCHI_USER="elchi"
@@ -125,6 +126,10 @@ while [[ $# -gt 0 ]]; do
       SERVER_TOKEN="${1#*=}"
       shift
       ;;
+    --cloud=*)
+      CLIENT_CLOUD="${1#*=}"
+      shift
+      ;;
     --help|-h)
       echo "Usage: $0 --name=NAME --host=HOST --port=PORT --tls=true|false --token=TOKEN [OPTIONS]"
       echo ""
@@ -136,13 +141,18 @@ while [[ $# -gt 0 ]]; do
       echo "  --token=TOKEN              Authentication token (min 8 chars)"
       echo ""
       echo "Optional Parameters:"
+      echo "  --cloud=CLOUD              Cloud name (defaults to 'other')"
       echo "  --enable-bgp               Install and configure FRR routing"
       echo "  --help, -h                 Show this help message"
       echo ""
+      echo "Important Note:"
+      echo "  If deploying on OpenStack, specify --cloud=YOUR_CLOUD_NAME (use the cloud name from Controller)"
+      echo ""
       echo "Examples:"
       echo "  $0 --name=web-server-01 --host=backend.elchi.io --port=443 --tls=true --token=your-token"
-      echo "  $0 --name=dev-client --host=10.0.0.1 --port=50051 --tls=false --token=dev-token"
-      echo "  $0 --enable-bgp --name=edge-router --host=controller.elchi.io --port=443 --tls=true --token=prod-token"
+      echo "  $0 --name=dev-client --host=10.0.0.1 --port=50051 --tls=false --token=dev-token --cloud=test-env"
+      echo "  $0 --name=openstack-vm --host=controller.elchi.io --port=443 --tls=true --token=prod-token --cloud=my-openstack"
+      echo "  $0 --enable-bgp --name=edge-router --host=controller.elchi.io --port=443 --tls=true --token=prod-token --cloud=production"
       exit 0
       ;;
     *)
@@ -177,6 +187,7 @@ if [[ -z "$SERVER_TOKEN" ]]; then
   MISSING_PARAMS+=("--token")
 fi
 
+
 if [[ ${#MISSING_PARAMS[@]} -gt 0 ]]; then
   fail "❌ Missing required parameters: ${MISSING_PARAMS[*]}"
   echo ""
@@ -199,6 +210,7 @@ fi
 if [[ ${#SERVER_TOKEN} -lt 8 ]]; then
   fail "❌ Invalid --token value: Token must be at least 8 characters long"
 fi
+
 
 ok "✅ All required parameters validated successfully"
 
@@ -837,9 +849,18 @@ run chmod 750 "$ELCHI_DIR" "$ELCHI_BIN_DIR"
 # Create config.yaml with user-provided configuration
 info "📝 Creating config.yaml with provided configuration"
 
+# Set BGP capability based on --enable-bgp flag
+if [[ "$ENABLE_FRR" == true ]]; then
+  CLIENT_BGP="true"
+else
+  CLIENT_BGP="false"
+fi
+
 info "🏷️  Client name: $CLIENT_NAME"
 info "🌐 Server: $SERVER_HOST:$SERVER_PORT (TLS: $SERVER_TLS)"
 info "🔑 Token: ${SERVER_TOKEN:0:8}..."
+info "🚏 BGP capability: $CLIENT_BGP (from --enable-bgp flag)"
+info "☁️  Cloud: $CLIENT_CLOUD"
 
 # Create config.yaml from template
 cat > "$ELCHI_CONFIG" <<EOF
@@ -852,6 +873,8 @@ server:
 
 client:
   name: "$CLIENT_NAME"
+  bgp: $CLIENT_BGP
+  cloud: "$CLIENT_CLOUD"
 
 logging:
   level: "info"

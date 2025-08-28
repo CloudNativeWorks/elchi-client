@@ -19,10 +19,9 @@ const (
 
 // Config holds all application configuration
 type Config struct {
-	Server   ServerConfig      `mapstructure:"server"`
-	Logging  LoggingConfig     `mapstructure:"logging"`
-	Client   ClientConfig      `mapstructure:"client"`
-	Metadata map[string]string `mapstructure:"metadata"`
+	Server  ServerConfig  `mapstructure:"server"`
+	Logging LoggingConfig `mapstructure:"logging"`
+	Client  ClientConfig  `mapstructure:"client"`
 }
 
 // ServerConfig holds GRPC server configuration
@@ -43,7 +42,9 @@ type LoggingConfig struct {
 
 // ClientConfig holds client-specific configuration
 type ClientConfig struct {
-	Name string `mapstructure:"name"`
+	Name  string `mapstructure:"name"`
+	BGP   *bool  `mapstructure:"bgp"`   // Pointer to detect if explicitly set
+	Cloud string `mapstructure:"cloud"`
 }
 
 // GetStoredClientID reads the client ID from the storage file
@@ -181,10 +182,6 @@ func DefaultConfig() *Config {
 		},
 		Client: ClientConfig{
 			Name: "new-client",
-		},
-		Metadata: map[string]string{
-			"environment": "production",
-			"role":        "client",
 		},
 	}
 }

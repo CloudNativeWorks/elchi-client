@@ -157,13 +157,22 @@ jobs:
           # Download installer
           wget https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/elchi-install.sh
           
-          # Production setup
+          # Production setup (cloud defaults to 'other')
           sudo bash elchi-install.sh \
             --name=web-server-01 \
             --host=backend.elchi.io \
             --port=443 \
             --tls=true \
             --token=your-auth-token
+          
+          # OpenStack deployment (use your cloud name from UI)
+          sudo bash elchi-install.sh \
+            --name=openstack-vm \
+            --host=controller.elchi.io \
+            --port=443 \
+            --tls=true \
+            --token=prod-token \
+            --cloud=my-openstack
           
           # With BGP routing
           sudo bash elchi-install.sh \
@@ -172,7 +181,8 @@ jobs:
             --host=controller.elchi.io \
             --port=443 \
             --tls=true \
-            --token=prod-token
+            --token=prod-token \
+            --cloud=production
           ```
           
           ### Configuration Options:
@@ -185,7 +195,11 @@ jobs:
           - `--token=TOKEN`: Authentication token (min 8 chars)
           
           **Optional Parameters:**
+          - `--cloud=CLOUD`: Cloud/infrastructure provider (defaults to 'other')
           - `--enable-bgp`: Install FRR routing
+          
+          **Important Note:**
+          - If you are deploying on OpenStack, specify `--cloud=YOUR_CLOUD_NAME` (use the cloud name from your UI)
           
           ### Manual Installation:
           
