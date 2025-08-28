@@ -16,21 +16,37 @@ import (
 type CloudDetector struct {
 	log    *logger.Logger
 	client *http.Client
+	config CloudDetectorConfig
+}
+
+// CloudDetectorConfig holds timeout configurations
+type CloudDetectorConfig struct {
+	DetectionTimeout time.Duration // Timeout for detection requests
+	MetadataTimeout  time.Duration // Timeout for metadata requests
+	OverallTimeout   time.Duration // Overall HTTP client timeout
 }
 
 // NewCloudDetector creates a new cloud detector
 func NewCloudDetector() *CloudDetector {
+	config := CloudDetectorConfig{
+		DetectionTimeout: 2 * time.Second,  // Quick detection
+		MetadataTimeout:  5 * time.Second,  // More time for metadata
+		OverallTimeout:   10 * time.Second, // Overall client timeout
+	}
+	
 	return &CloudDetector{
-		log: logger.NewLogger("clouddetector"),
+		log:    logger.NewLogger("clouddetector"),
+		config: config,
 		client: &http.Client{
-			Timeout: 3 * time.Second,
+			Timeout: config.OverallTimeout,
 		},
 	}
 }
 
 // DetectProvider tries to detect the cloud provider
 func (cd *CloudDetector) DetectProvider(ctx context.Context) string {
-	cd.log.Debug("Starting cloud provider detection...")
+	cd.log.Debugf("Starting cloud provider detection (detection timeout: %v, metadata timeout: %v)...", 
+		cd.config.DetectionTimeout, cd.config.MetadataTimeout)
 	
 	// Try OpenStack first
 	if cd.tryOpenStack(ctx) {
@@ -112,88 +128,104 @@ func (cd *CloudDetector) GetMetadata(ctx context.Context, cloudName, detectedPro
 // tryOpenStack checks if running on OpenStack
 func (cd *CloudDetector) tryOpenStack(ctx context.Context) bool {
 	cd.log.Debug("Checking OpenStack metadata endpoint...")
-	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, cd.config.DetectionTimeout)
 	defer cancel()
 	
 	req, err := http.NewRequestWithContext(reqCtx, "GET", "http://169.254.169.254/openstack/latest/meta_data.json", nil)
 	if err != nil {
+		cd.log.Debugf("OpenStack request creation failed: %v", err)
 		return false
 	}
 	
 	resp, err := cd.client.Do(req)
 	if err != nil {
+		cd.log.Debugf("OpenStack detection failed: %v", err)
 		return false
 	}
 	defer resp.Body.Close()
 	
-	return resp.StatusCode == http.StatusOK
+	success := resp.StatusCode == http.StatusOK
+	cd.log.Debugf("OpenStack detection result: %v (status: %d)", success, resp.StatusCode)
+	return success
 }
 
 // tryAWS checks if running on AWS
 func (cd *CloudDetector) tryAWS(ctx context.Context) bool {
 	cd.log.Debug("Checking AWS metadata endpoint...")
-	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, cd.config.DetectionTimeout)
 	defer cancel()
 	
 	req, err := http.NewRequestWithContext(reqCtx, "GET", "http://169.254.169.254/latest/meta-data/", nil)
 	if err != nil {
+		cd.log.Debugf("AWS request creation failed: %v", err)
 		return false
 	}
 	
 	resp, err := cd.client.Do(req)
 	if err != nil {
+		cd.log.Debugf("AWS detection failed: %v", err)
 		return false
 	}
 	defer resp.Body.Close()
 	
-	return resp.StatusCode == http.StatusOK
+	success := resp.StatusCode == http.StatusOK
+	cd.log.Debugf("AWS detection result: %v (status: %d)", success, resp.StatusCode)
+	return success
 }
 
 // tryGCP checks if running on GCP
 func (cd *CloudDetector) tryGCP(ctx context.Context) bool {
 	cd.log.Debug("Checking GCP metadata endpoint...")
-	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, cd.config.DetectionTimeout)
 	defer cancel()
 	
 	req, err := http.NewRequestWithContext(reqCtx, "GET", "http://metadata.google.internal/computeMetadata/v1/instance/", nil)
 	if err != nil {
+		cd.log.Debugf("GCP request creation failed: %v", err)
 		return false
 	}
 	req.Header.Set("Metadata-Flavor", "Google")
 	
 	resp, err := cd.client.Do(req)
 	if err != nil {
+		cd.log.Debugf("GCP detection failed: %v", err)
 		return false
 	}
 	defer resp.Body.Close()
 	
-	return resp.StatusCode == http.StatusOK
+	success := resp.StatusCode == http.StatusOK
+	cd.log.Debugf("GCP detection result: %v (status: %d)", success, resp.StatusCode)
+	return success
 }
 
 // tryAzure checks if running on Azure
 func (cd *CloudDetector) tryAzure(ctx context.Context) bool {
 	cd.log.Debug("Checking Azure metadata endpoint...")
-	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, cd.config.DetectionTimeout)
 	defer cancel()
 	
 	req, err := http.NewRequestWithContext(reqCtx, "GET", "http://169.254.169.254/metadata/instance?api-version=2021-02-01", nil)
 	if err != nil {
+		cd.log.Debugf("Azure request creation failed: %v", err)
 		return false
 	}
 	req.Header.Set("Metadata", "true")
 	
 	resp, err := cd.client.Do(req)
 	if err != nil {
+		cd.log.Debugf("Azure detection failed: %v", err)
 		return false
 	}
 	defer resp.Body.Close()
 	
-	return resp.StatusCode == http.StatusOK
+	success := resp.StatusCode == http.StatusOK
+	cd.log.Debugf("Azure detection result: %v (status: %d)", success, resp.StatusCode)
+	return success
 }
 
 // getOpenStackMetadata fetches OpenStack metadata
 func (cd *CloudDetector) getOpenStackMetadata(ctx context.Context) map[string]string {
-	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, cd.config.MetadataTimeout)
 	defer cancel()
 	
 	req, err := http.NewRequestWithContext(reqCtx, "GET", "http://169.254.169.254/openstack/latest/meta_data.json", nil)
@@ -240,7 +272,7 @@ func (cd *CloudDetector) getOpenStackMetadata(ctx context.Context) map[string]st
 
 // getGCPMetadata fetches GCP metadata
 func (cd *CloudDetector) getGCPMetadata(ctx context.Context) map[string]string {
-	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, cd.config.MetadataTimeout)
 	defer cancel()
 	
 	req, err := http.NewRequestWithContext(reqCtx, "GET", "http://metadata.google.internal/computeMetadata/v1/instance/?recursive=true", nil)
@@ -286,7 +318,7 @@ func (cd *CloudDetector) getGCPMetadata(ctx context.Context) map[string]string {
 
 // getAzureMetadata fetches Azure metadata
 func (cd *CloudDetector) getAzureMetadata(ctx context.Context) map[string]string {
-	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, cd.config.MetadataTimeout)
 	defer cancel()
 	
 	req, err := http.NewRequestWithContext(reqCtx, "GET", "http://169.254.169.254/metadata/instance?api-version=2021-02-01", nil)
