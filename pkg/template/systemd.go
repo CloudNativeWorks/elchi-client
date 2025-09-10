@@ -12,9 +12,12 @@ WorkingDirectory=/var/lib/elchi
 
 User=envoyuser
 Group=envoyuser
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_RESOURCE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_RESOURCE
 NoNewPrivileges=yes
+
+ReadWritePaths=/var/log /var/lib/elchi /tmp /var/run /dev/shm
+ReadOnlyPaths=/etc/ssl/certs
 
 LimitNOFILE=1048576
 LimitCORE=infinity
