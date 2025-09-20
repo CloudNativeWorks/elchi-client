@@ -1,0 +1,16 @@
+server:
+  host: "" # Main server address
+  port: 80 # Main server port
+  tls: false # Set to true if you are using TLS on main server
+  token: "xxxx-xxxx-xxxx-xxxx" # Get from Elchi
+  timeout: "30s"
+
+client:
+  name: "client-1" # Set to the name of the machine
+  cloud: "other"
+  bgp: true
+
+logging:
+  level: "info" # Set to "debug" for debugging
+  format: "json"
+
