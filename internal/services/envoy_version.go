@@ -26,7 +26,7 @@ func (s *Services) EnvoyVersionService(cmd *client.Command) *client.CommandRespo
 			Error:     "envoy version payload is required",
 			Result: &client.CommandResponse_EnvoyVersion{
 				EnvoyVersion: &client.ResponseEnvoyVersion{
-					Status:       client.EnvoyVersionStatus_VERSION_NOT_FOUND,
+					Status:       client.VersionStatus_VERSION_NOT_FOUND,
 					ErrorMessage: "envoy version payload is required",
 				},
 			},
@@ -40,7 +40,7 @@ func (s *Services) EnvoyVersionService(cmd *client.Command) *client.CommandRespo
 	response := manager.ProcessEnvoyVersionCommand(envoyVersionRequest)
 
 	// Log the result
-	if response.Status == client.EnvoyVersionStatus_SUCCESS {
+	if response.Status == client.VersionStatus_SUCCESS {
 		logger.WithFields(logrus.Fields{
 			"operation":          envoyVersionRequest.Operation,
 			"downloaded_count":   len(response.DownloadedVersions),
@@ -58,7 +58,7 @@ func (s *Services) EnvoyVersionService(cmd *client.Command) *client.CommandRespo
 	return &client.CommandResponse{
 		Identity:  cmd.Identity,
 		CommandId: cmd.CommandId,
-		Success:   response.Status == client.EnvoyVersionStatus_SUCCESS,
+		Success:   response.Status == client.VersionStatus_SUCCESS,
 		Error:     response.ErrorMessage,
 		Result: &client.CommandResponse_EnvoyVersion{
 			EnvoyVersion: response,

@@ -25,6 +25,7 @@ func NewCommandRegistry(services *services.Services) *CommandRegistry {
 	registry.Register(client.CommandType_FRR, &FrrCommandHandler{services: services})
 	registry.Register(client.CommandType_FRR_LOGS, &GeneralLogCommandHandler{services: services})
 	registry.Register(client.CommandType_ENVOY_VERSION, &EnvoyVersionCommandHandler{services: services})
+	registry.Register(client.CommandType_WAF_VERSION, &WafVersionCommandHandler{services: services})
 
 	return registry
 }

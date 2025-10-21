@@ -57,3 +57,7 @@ type FrrCommandHandler struct {
 type EnvoyVersionCommandHandler struct {
 	services *services.Services
 }
+
+type WafVersionCommandHandler struct {
+	services *services.Services
+}

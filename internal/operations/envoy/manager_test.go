@@ -34,7 +34,7 @@ func TestProcessEnvoyVersionCommand_GetVersions(t *testing.T) {
 	manager := NewManager()
 
 	request := &client.RequestEnvoyVersion{
-		Operation: client.EnvoyVersionOperation_GET_VERSIONS,
+		Operation: client.VersionOperation_GET_VERSIONS,
 	}
 
 	response := manager.ProcessEnvoyVersionCommand(request)
@@ -43,7 +43,7 @@ func TestProcessEnvoyVersionCommand_GetVersions(t *testing.T) {
 		t.Fatal("Response should not be nil")
 	}
 
-	if response.Status != client.EnvoyVersionStatus_SUCCESS {
+	if response.Status != client.VersionStatus_SUCCESS {
 		t.Errorf("Expected SUCCESS status, got %v", response.Status)
 	}
 
@@ -60,7 +60,7 @@ func TestProcessEnvoyVersionCommand_SetVersion_EmptyVersion(t *testing.T) {
 	manager := NewManager()
 
 	request := &client.RequestEnvoyVersion{
-		Operation: client.EnvoyVersionOperation_SET_VERSION,
+		Operation: client.VersionOperation_SET_VERSION,
 		Version:   "", // Empty version should fail
 	}
 
@@ -70,7 +70,7 @@ func TestProcessEnvoyVersionCommand_SetVersion_EmptyVersion(t *testing.T) {
 		t.Fatal("Response should not be nil")
 	}
 
-	if response.Status == client.EnvoyVersionStatus_SUCCESS {
+	if response.Status == client.VersionStatus_SUCCESS {
 		t.Error("Expected non-SUCCESS status for empty version")
 	}
 

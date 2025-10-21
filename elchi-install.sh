@@ -36,7 +36,7 @@ ELCHI_DIR="/etc/elchi"
 ELCHI_BIN_DIR="$ELCHI_DIR/bin"
 ELCHI_CONFIG="$ELCHI_DIR/config.yaml"
 ELCHI_VAR_LIB="/var/lib/elchi"
-ELCHI_VAR_DIRS=( bootstraps envoys hotrestarter lua tmp )
+ELCHI_VAR_DIRS=( bootstraps envoys waf hotrestarter lua tmp )
 
 # Configuration files
 SYSCTL_FILE="/etc/sysctl.d/elchi.conf"

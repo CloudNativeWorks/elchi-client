@@ -41,3 +41,7 @@ func (h *FrrCommandHandler) Handle(cmd *client.Command) *client.CommandResponse 
 func (h *EnvoyVersionCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
 	return h.services.EnvoyVersionService(cmd)
 }
+
+func (h *WafVersionCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
+	return h.services.WafVersionService(cmd)
+}
