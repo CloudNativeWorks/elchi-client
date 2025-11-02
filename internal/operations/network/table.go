@@ -184,23 +184,6 @@ func (tm *TableManager) readTableDefinitions() ([]*client.RoutingTableDefinition
 	return tables, nil
 }
 
-// CleanupElchiTables removes all Elchi-managed tables
-func (tm *TableManager) CleanupElchiTables() error {
-	tm.logger.Info("Cleaning up Elchi-managed routing tables")
-
-	if err := os.Remove(tm.tablePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove table file: %v", err)
-	}
-
-	// Remove symbolic link too
-	os.Remove(KernelTableLink)
-
-	tm.logger.Infof("Removed Elchi table definitions from %s", tm.tablePath)
-	return nil
-}
-
-// Utility functions
-
 // isValidTableName checks if table name is valid (alphanumeric + underscore/hyphen)
 func isValidTableName(name string) bool {
 	if name == "" {
@@ -217,40 +200,6 @@ func isValidTableName(name string) bool {
 	}
 	return true
 }
-
-// GetTableIDByName returns table ID for given name
-func (tm *TableManager) GetTableIDByName(name string) (uint32, error) {
-	tables, err := tm.GetCurrentTables()
-	if err != nil {
-		return 0, err
-	}
-
-	for _, table := range tables {
-		if table.Name == name {
-			return table.Id, nil
-		}
-	}
-
-	return 0, fmt.Errorf("table '%s' not found", name)
-}
-
-// GetTableNameByID returns table name for given ID
-func (tm *TableManager) GetTableNameByID(id uint32) (string, error) {
-	tables, err := tm.GetCurrentTables()
-	if err != nil {
-		return "", err
-	}
-
-	for _, table := range tables {
-		if table.Id == id {
-			return table.Name, nil
-		}
-	}
-
-	return "", fmt.Errorf("table %d not found", id)
-}
-
-// Individual table operation methods
 
 // addTable adds a single table to the configuration
 func (tm *TableManager) addTable(table *client.RoutingTableDefinition) error {

@@ -135,14 +135,7 @@ func Init(config Config) error {
 
 // getDefaultLogPath returns the default log file path
 func getDefaultLogPath() string {
-	return "/var/log/elchi/elchi-client.log"
-}
-
-// SetOutput sets the logger output
-func SetOutput(output io.Writer) {
-	if globalLogger != nil {
-		globalLogger.SetOutput(output)
-	}
+	return "/var/log/elchi-client.log"
 }
 
 // callerPrettyfier is used to format the caller information
@@ -261,76 +254,8 @@ func (l *Logger) WithError(err error) *logrus.Entry {
 }
 
 // Middleware functions for global access if needed
-func Debug(args ...any) {
-	if globalLogger != nil {
-		globalLogger.Debug(args...)
-	}
-}
-
-func Debugf(format string, args ...any) {
-	if globalLogger != nil {
-		globalLogger.Debugf(format, args...)
-	}
-}
-
-func Info(args ...any) {
-	if globalLogger != nil {
-		globalLogger.Info(args...)
-	}
-}
-
-func Infof(format string, args ...any) {
-	if globalLogger != nil {
-		globalLogger.Infof(format, args...)
-	}
-}
-
-func Warn(args ...any) {
-	if globalLogger != nil {
-		globalLogger.Warn(args...)
-	}
-}
-
-func Warnf(format string, args ...any) {
-	if globalLogger != nil {
-		globalLogger.Warnf(format, args...)
-	}
-}
-
-func Error(args ...any) {
-	if globalLogger != nil {
-		globalLogger.Error(args...)
-	}
-}
-
-func Errorf(format string, args ...any) {
-	if globalLogger != nil {
-		globalLogger.Errorf(format, args...)
-	}
-}
-
-func Fatal(args ...any) {
-	if globalLogger != nil {
-		globalLogger.Fatal(args...)
-	}
-}
-
 func Fatalf(format string, args ...any) {
 	if globalLogger != nil {
 		globalLogger.Fatalf(format, args...)
 	}
-}
-
-func WithFields(fields Fields) *logrus.Entry {
-	if globalLogger != nil {
-		return globalLogger.WithFields(fields)
-	}
-	return nil
-}
-
-func WithError(err error) *logrus.Entry {
-	if globalLogger != nil {
-		return globalLogger.WithError(err)
-	}
-	return nil
 }

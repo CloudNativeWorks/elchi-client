@@ -29,11 +29,6 @@ func NewClient(logger *logger.Logger, grpcConn *grpc.ClientConn, clientID string
 	}
 }
 
-// SendPing sends a ping request to the controller
-func (p *Client) SendPing() (*client.PingResponse, error) {
-	return p.SendPingWithTimeout(DefaultPingTimeout)
-}
-
 // SendPingWithTimeout sends a ping request with custom timeout
 func (p *Client) SendPingWithTimeout(timeout time.Duration) (*client.PingResponse, error) {
 	if p.grpcConn == nil {

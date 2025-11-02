@@ -61,7 +61,7 @@ func (s *Services) SystemdServiceLogs(cmd *client.Command) *client.CommandRespon
 		return helper.NewErrorResponse(cmd, "service request is nil")
 	}
 
-	identifier := fmt.Sprintf("elchi-%s-%d", serviceReq.GetName(), serviceReq.GetPort())
+	identifier := fmt.Sprintf("%s-%d", serviceReq.GetName(), serviceReq.GetPort())
 
 	logs, err := journal.GetLastNLogs(identifier, serviceReq)
 	if err != nil {

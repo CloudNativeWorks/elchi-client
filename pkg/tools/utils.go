@@ -25,6 +25,7 @@ func GetIPv4CIDR(ipv4 string) (string, error) {
 	return ipv4 + "/32", nil
 }
 
+// this is for development debuging
 func PrettyPrint(data any) {
 	if data == nil {
 		return

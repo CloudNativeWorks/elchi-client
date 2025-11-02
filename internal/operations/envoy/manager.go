@@ -2,7 +2,6 @@ package envoy
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,29 +177,4 @@ func (m *Manager) ProcessEnvoyVersionCommand(request *client.RequestEnvoyVersion
 	}
 	
 	return response
-}
-
-// GetVersionDirectories returns all version directories for debugging
-func (m *Manager) GetVersionDirectories() (map[string]fs.FileInfo, error) {
-	dirs := make(map[string]fs.FileInfo)
-	
-	entries, err := os.ReadDir(DefaultBaseDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return dirs, nil
-		}
-		return nil, err
-	}
-	
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "v") {
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			dirs[entry.Name()] = info
-		}
-	}
-	
-	return dirs, nil
 }

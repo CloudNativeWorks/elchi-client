@@ -145,13 +145,6 @@ func (h *HeartbeatService) Stop() {
 	}
 }
 
-// IsRunning returns whether the heartbeat service is running
-func (h *HeartbeatService) IsRunning() bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.running
-}
-
 // SendPing sends a single ping request (can be used by other components)
 func (h *HeartbeatService) SendPing() (*client.PingResponse, error) {
 	h.mu.RLock()
@@ -273,23 +266,4 @@ func (h *HeartbeatService) reconnectHeartbeat(clientID string, config *config.Co
 	
 	h.logger.Info("Heartbeat service reconnected successfully")
 	return nil
-}
-
-// GetStats returns heartbeat service statistics
-func (h *HeartbeatService) GetStats() map[string]interface{} {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	
-	connectionState := "disconnected"
-	if h.grpcConn != nil && h.grpcConn.GetConnection() != nil {
-		connectionState = h.grpcConn.GetConnection().GetState().String()
-	}
-	
-	return map[string]interface{}{
-		"running":           h.running,
-		"ping_ready":        h.pingClient.IsReady(),
-		"connection_state":  connectionState,
-		"interval_minutes":  HeartbeatInterval.Minutes(),
-		"timeout_seconds":   PingTimeout.Seconds(),
-	}
 }

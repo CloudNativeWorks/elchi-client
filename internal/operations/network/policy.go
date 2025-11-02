@@ -353,25 +353,6 @@ func countBits(mask net.IPMask) int {
 	return count
 }
 
-// CleanupElchiPolicies removes all Elchi-managed policies (exported for future use)
-func (pm *PolicyManager) CleanupElchiPolicies() error {
-	pm.logger.Info("Cleaning up all Elchi-managed routing policies")
-
-	policies, err := pm.GetCurrentPolicies()
-	if err != nil {
-		return err
-	}
-
-	for _, policy := range policies {
-		if err := pm.deleteRuntimePolicy(policy); err != nil {
-			pm.logger.Warnf("Failed to delete policy (priority=%d): %v", policy.Priority, err)
-		}
-	}
-
-	pm.logger.Info("Elchi policy cleanup completed")
-	return nil
-}
-
 // PolicyManage handles SUB_POLICY_MANAGE command
 func PolicyManage(cmd *client.Command, logger *logger.Logger) *client.CommandResponse {
 	networkReq := cmd.GetNetwork()

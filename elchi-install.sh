@@ -6,6 +6,7 @@
 # • elchi & envoyuser users
 # • /etc/elchi and /var/lib/elchi hierarchy
 # • elchi-client systemd service
+# • Logging infrastructure (logrotate, filebeat)
 # • Optional: FRR installation (--enable-bgp)
 #
 
@@ -30,6 +31,13 @@ CLIENT_CLOUD=""
 # System users
 ELCHI_USER="elchi"
 ENVOY_USER="envoyuser"
+
+# Logging configuration
+ELCHI_LOG_DIR="/var/log/elchi"
+LOGROTATE_CONFIG="/etc/logrotate.d/elchi"
+LOGROTATE_CRON="/etc/cron.d/logrotate-5min"
+LOGROTATE_SCRIPT="/usr/local/bin/logrotate-5min.sh"
+FILEBEAT_CONFIG="/etc/filebeat/filebeat.yml"
 
 # Directory paths
 ELCHI_DIR="/etc/elchi"
@@ -597,26 +605,42 @@ ensure_yq_installed() {
 
 ensure_required_tools() {
   info "🔧 Checking required system tools"
-  
+
   # Tools that might be missing in minimal installations
   REQUIRED_PACKAGES=""
-  
+
   if ! command -v netstat &>/dev/null; then
     REQUIRED_PACKAGES="$REQUIRED_PACKAGES net-tools"
   fi
-  
+
   if ! command -v networkctl &>/dev/null; then
     REQUIRED_PACKAGES="$REQUIRED_PACKAGES systemd-networkd"
   fi
-  
+
   if ! command -v netplan &>/dev/null; then
     REQUIRED_PACKAGES="$REQUIRED_PACKAGES netplan.io"
   fi
-  
+
   if ! command -v ip &>/dev/null; then
     REQUIRED_PACKAGES="$REQUIRED_PACKAGES iproute2"
   fi
-  
+
+  if ! command -v cron &>/dev/null; then
+    REQUIRED_PACKAGES="$REQUIRED_PACKAGES cron"
+  fi
+
+  if ! command -v logrotate &>/dev/null; then
+    REQUIRED_PACKAGES="$REQUIRED_PACKAGES logrotate"
+  fi
+
+  if ! command -v filebeat &>/dev/null; then
+    REQUIRED_PACKAGES="$REQUIRED_PACKAGES filebeat"
+  fi
+
+  if ! command -v rsyslogd &>/dev/null; then
+    REQUIRED_PACKAGES="$REQUIRED_PACKAGES rsyslog"
+  fi
+
   if [[ -n "$REQUIRED_PACKAGES" ]]; then
     info "📦 Installing missing tools:$REQUIRED_PACKAGES"
     run apt update -qq
@@ -625,6 +649,174 @@ ensure_required_tools() {
   else
     ok "✅ All required tools already available"
   fi
+}
+
+###############################################################################
+# LOGGING CONFIGURATION
+###############################################################################
+
+setup_logging_infrastructure() {
+  info "📁 Setting up logging infrastructure"
+
+  # Create log directory
+  info "creating $ELCHI_LOG_DIR directory"
+  run mkdir -p "$ELCHI_LOG_DIR"
+  run chown -R root:adm "$ELCHI_LOG_DIR"
+  ok "✅ Log directory created"
+
+  # Create logrotate configuration
+  info "🛠️  Creating logrotate configuration for elchi"
+  cat >"$LOGROTATE_CONFIG" <<'EOF'
+/var/log/elchi/*.log {
+    size 200M
+    rotate 5
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    sharedscripts
+    postrotate
+        pidof envoy | xargs -r kill -SIGUSR1 2>/dev/null || true
+    endscript
+}
+EOF
+  chmod 644 "$LOGROTATE_CONFIG"
+  ok "✅ Logrotate config created"
+
+  # Create logrotate script
+  info "📜 Creating logrotate-5min.sh script"
+  cat >"$LOGROTATE_SCRIPT" <<'EOF'
+#!/bin/bash
+/usr/sbin/logrotate /etc/logrotate.d/elchi
+EOF
+  run chmod +x "$LOGROTATE_SCRIPT"
+  ok "✅ Logrotate script created"
+
+  # Create cron job for 5-minute logrotate
+  info "🕔 Creating 5-minute cron job for logrotate"
+  cat >"$LOGROTATE_CRON" <<'EOF'
+*/5 * * * * root /usr/local/bin/logrotate-5min.sh
+EOF
+  chmod 644 "$LOGROTATE_CRON"
+  ok "✅ Logrotate cron job configured"
+
+  # Enable and start cron service
+  info "🔄 Enabling cron service"
+  run systemctl enable --now cron
+
+  # Test logrotate configuration
+  info "🧪 Testing logrotate configuration (dry run)"
+  if logrotate -dv /etc/logrotate.conf &>/dev/null; then
+    ok "✅ Logrotate config is valid"
+  else
+    warn "⚠️  Logrotate dry run had warnings (non-critical)"
+  fi
+}
+
+setup_filebeat_configuration() {
+  info "📝 Configuring Filebeat"
+
+  # Check if Filebeat config already exists
+  if [[ -f "$FILEBEAT_CONFIG" ]]; then
+    # Backup existing configuration
+    local backup_file="${FILEBEAT_CONFIG}.backup-$(date +%Y%m%d-%H%M%S)"
+    info "⚠️  Existing Filebeat config found, creating backup"
+    run cp "$FILEBEAT_CONFIG" "$backup_file"
+    ok "✅ Backup created: $(basename $backup_file)"
+  fi
+
+  # Create new Filebeat configuration
+  info "📄 Writing Filebeat configuration"
+  cat >"$FILEBEAT_CONFIG" <<'EOF'
+filebeat.inputs:
+  - type: filestream
+    enabled: false
+    id: elchi-logs
+    paths:
+      - /var/log/elchi/*.log
+
+processors:
+  - timestamp:
+      field: message
+      layouts:
+        - '[2006-01-02 15:04:05.000]'
+      test:
+        - '[2025-10-26 11:11:05.343]'
+  - drop_fields:
+      fields: ["agent", "input", "ecs", "log.offset", "log.file.inode", "log.file.device_id", "tags"]
+
+output.logstash:
+  hosts: ["hostorip:5044"]
+  loadbalance: false
+EOF
+
+  chmod 644 "$FILEBEAT_CONFIG"
+  ok "✅ Filebeat configuration created"
+
+  # Restart Filebeat to apply changes
+  info "🔃 Restarting Filebeat to apply changes"
+  run systemctl daemon-reload
+  run systemctl restart filebeat
+  ok "✅ Filebeat restarted successfully"
+}
+
+###############################################################################
+# RSYSLOG CONFIGURATION
+###############################################################################
+
+setup_rsyslog_configuration() {
+  info "📝 Configuring Rsyslog"
+
+  # Create rsyslog configuration for elchi logs
+  info "📄 Creating rsyslog configuration: /etc/rsyslog.d/50-elchi.conf"
+  cat > /etc/rsyslog.d/50-elchi.conf <<'EOF'
+module(load="imfile")
+
+template(name="WithFilenamePrefix" type="list") {
+  property(name="$!metadata!filename" field.extract="basename")
+  constant(value=" ")
+  property(name="msg")
+  constant(value="\n")
+}
+
+input(type="imfile"
+      File="/var/log/elchi/*_access.log"
+      Tag="elchi-access"
+      Severity="info"
+      Facility="local7"
+      addMetadata="on")
+
+input(type="imfile"
+      File="/var/log/elchi/*_system.log"
+      Tag="elchi-system"
+      Severity="info"
+      Facility="local7"
+      addMetadata="on")
+
+#action(
+#  type="omfwd"
+#  target="syslog.example.com"
+#  port="514"
+#  protocol="udp"
+#  template="WithFilenamePrefix"
+#  action.resumeRetryCount="2"
+#  queue.type="linkedList"
+#  queue.size="10000"
+#)
+EOF
+
+  run chmod 644 /etc/rsyslog.d/50-elchi.conf
+  ok "✅ Rsyslog configuration created"
+
+  # Enable rsyslog but keep it stopped (will be managed via API)
+  info "🔧 Enabling rsyslog service (keeping stopped for API management)"
+  run systemctl daemon-reload
+  run systemctl enable rsyslog
+  run systemctl enable syslog.socket
+  run systemctl stop rsyslog 2>/dev/null || true
+  run systemctl stop syslog.socket 2>/dev/null || true
+  ok "✅ Rsyslog enabled but stopped (managed via API)"
 }
 
 ###############################################################################
@@ -798,6 +990,7 @@ info "creating system users"
 id "$ELCHI_USER"  &>/dev/null && ok "$ELCHI_USER exists"  || run useradd --system --no-create-home --shell /usr/sbin/nologin "$ELCHI_USER"
 id "$ENVOY_USER"  &>/dev/null && ok "$ENVOY_USER exists" || run useradd --system --no-create-home --shell /usr/sbin/nologin "$ENVOY_USER"
 run usermod -aG "$ELCHI_USER" "$ENVOY_USER"
+run usermod -aG adm "$ENVOY_USER"
 
 # Configure sudoers
 info "configuring sudoers rule"
@@ -853,7 +1046,38 @@ Cmnd_Alias FRR_CMDS = \
  /usr/bin/systemctl enable frr, \
  /usr/bin/systemctl disable frr
 
-elchi ALL=(ALL) NOPASSWD: ELCHI_CMDS, FRR_CMDS
+Cmnd_Alias FILEBEAT_CMDS = \
+ /usr/bin/tee /etc/filebeat/filebeat.yml, \
+ /usr/bin/chmod 644 /etc/filebeat/filebeat.yml, \
+ /usr/bin/systemctl start filebeat, \
+ /usr/bin/systemctl stop filebeat, \
+ /usr/bin/systemctl restart filebeat, \
+ /usr/bin/systemctl reload filebeat, \
+ /usr/bin/systemctl status filebeat, \
+ /usr/bin/systemctl enable filebeat, \
+ /usr/bin/systemctl disable filebeat, \
+ /usr/bin/systemctl is-active filebeat
+
+Cmnd_Alias RSYSLOG_CMDS = \
+ /usr/bin/tee /etc/rsyslog.d/50-elchi.conf, \
+ /usr/bin/chmod 644 /etc/rsyslog.d/50-elchi.conf, \
+ /usr/bin/systemctl start rsyslog, \
+ /usr/bin/systemctl stop rsyslog, \
+ /usr/bin/systemctl restart rsyslog, \
+ /usr/bin/systemctl reload rsyslog, \
+ /usr/bin/systemctl status rsyslog, \
+ /usr/bin/systemctl enable rsyslog, \
+ /usr/bin/systemctl disable rsyslog, \
+ /usr/bin/systemctl is-active rsyslog, \
+ /usr/bin/systemctl start syslog.socket, \
+ /usr/bin/systemctl stop syslog.socket, \
+ /usr/bin/systemctl restart syslog.socket, \
+ /usr/bin/systemctl status syslog.socket, \
+ /usr/bin/systemctl enable syslog.socket, \
+ /usr/bin/systemctl disable syslog.socket, \
+ /usr/bin/systemctl is-active syslog.socket
+
+elchi ALL=(ALL) NOPASSWD: ELCHI_CMDS, FRR_CMDS, FILEBEAT_CMDS, RSYSLOG_CMDS
 Defaults:elchi !pam_session
 
 EOF
@@ -883,8 +1107,12 @@ info "🔑 Token: ${SERVER_TOKEN:0:8}..."
 info "🚏 BGP capability: $CLIENT_BGP (from --enable-bgp flag)"
 info "☁️  Cloud: $CLIENT_CLOUD"
 
-# Create config.yaml from template
-cat > "$ELCHI_CONFIG" <<EOF
+# Create config.yaml from template (only if it doesn't exist)
+if [[ -f "$ELCHI_CONFIG" ]]; then
+  ok "✅ Config file already exists, skipping: $ELCHI_CONFIG"
+else
+  info "📝 Creating new config file: $ELCHI_CONFIG"
+  cat > "$ELCHI_CONFIG" <<EOF
 server:
   host: "$SERVER_HOST"
   port: $SERVER_PORT
@@ -900,19 +1128,12 @@ client:
 logging:
   level: "info"
   format: "json"
-  modules:
-    client: "info"
-    grpc: "info"
-    command: "info"
-    frr: "info"
-    network: "info"
-    filesystem: "info"
-    systemd: "info"
-    statistics: "info"
 EOF
 
-run chown root:"$ELCHI_USER" "$ELCHI_CONFIG"
-run chmod 640 "$ELCHI_CONFIG"
+  run chown root:"$ELCHI_USER" "$ELCHI_CONFIG"
+  run chmod 640 "$ELCHI_CONFIG"
+  ok "✅ Config file created"
+fi
 ok "✅ config.yaml created successfully"
 
 # Download elchi-client binary from latest GitHub release
@@ -1059,7 +1280,7 @@ ExecStart=$ELCHI_BIN_DIR/elchi-client start --config $ELCHI_CONFIG
 Restart=always
 RestartSec=15
 
-ReadWritePaths=/etc/netplan /etc/elchi /var/lib/elchi /usr/lib/systemd/system /etc/systemd
+ReadWritePaths=/etc/netplan /etc/elchi /var/lib/elchi /usr/lib/systemd/system /etc/systemd /etc/filebeat /etc/rsyslog.d
 ProtectSystem=full
 AmbientCapabilities=CAP_DAC_OVERRIDE CAP_FOWNER CAP_NET_BIND_SERVICE \
                    CAP_NET_ADMIN CAP_SETUID CAP_SETGID CAP_AUDIT_WRITE \
@@ -1085,6 +1306,11 @@ run systemctl enable --now elchi-client.service
 setup_sources_list
 ensure_yq_installed
 ensure_required_tools
+
+# Setup logging infrastructure
+setup_logging_infrastructure
+setup_filebeat_configuration
+setup_rsyslog_configuration
 
 # Convert default Ubuntu netplan to elchi-managed format
 rename_default_netplan_to_elchi
@@ -1133,6 +1359,10 @@ printf "${C_INF}│${C_RST} ✅ Sudoers Configuration: ${C_OK}Applied${C_RST}\n"
 printf "${C_INF}│${C_RST} ✅ APT Sources: ${C_OK}Optimized${C_RST}\n"
 printf "${C_INF}│${C_RST} ✅ Netplan Configuration: ${C_OK}Split per Interface${C_RST}\n"
 printf "${C_INF}│${C_RST} ✅ Routing Tables: ${C_OK}Generated${C_RST}\n"
+printf "${C_INF}│${C_RST} ✅ Logging Infrastructure: ${C_OK}Configured${C_RST}\n"
+printf "${C_INF}│${C_RST} ✅ Logrotate (5-min cron): ${C_OK}Enabled${C_RST}\n"
+printf "${C_INF}│${C_RST} ✅ Filebeat: ${C_OK}Configured${C_RST}\n"
+printf "${C_INF}│${C_RST} ✅ Rsyslog: ${C_OK}Configured${C_RST}\n"
 printf "${C_INF}└──────────────────────────────────────────────────────────────────────────────┘${C_RST}\n"
 echo ""
 
@@ -1174,6 +1404,11 @@ printf "${C_INF}│${C_RST} 📝 Sudoers: ${C_OK}/etc/sudoers.d/99-elchi${C_RST}
 printf "${C_INF}│${C_RST} 📝 Service: ${C_OK}/etc/systemd/system/elchi-client.service${C_RST}\n"
 printf "${C_INF}│${C_RST} 📝 Config: ${C_OK}/etc/elchi/config.yaml${C_RST}\n"
 printf "${C_INF}│${C_RST} 📝 Routing: ${C_OK}/etc/iproute2/rt_tables.d/elchi.conf${C_RST}\n"
+printf "${C_INF}│${C_RST} 📝 Logrotate: ${C_OK}/etc/logrotate.d/elchi${C_RST}\n"
+printf "${C_INF}│${C_RST} 📝 Logrotate Cron: ${C_OK}/etc/cron.d/logrotate-5min${C_RST}\n"
+printf "${C_INF}│${C_RST} 📝 Filebeat: ${C_OK}/etc/filebeat/filebeat.yml${C_RST}\n"
+printf "${C_INF}│${C_RST} 📝 Rsyslog: ${C_OK}/etc/rsyslog.d/50-elchi.conf${C_RST}\n"
+printf "${C_INF}│${C_RST} 📁 Log Directory: ${C_OK}/var/log/elchi${C_RST}\n"
 printf "${C_INF}└──────────────────────────────────────────────────────────────────────────────┘${C_RST}\n"
 echo ""
 

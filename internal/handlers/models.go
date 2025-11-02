@@ -61,3 +61,11 @@ type EnvoyVersionCommandHandler struct {
 type WafVersionCommandHandler struct {
 	services *services.Services
 }
+
+type FilebeatCommandHandler struct {
+	services *services.Services
+}
+
+type RsyslogCommandHandler struct {
+	services *services.Services
+}

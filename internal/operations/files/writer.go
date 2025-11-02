@@ -57,23 +57,17 @@ func WriteDummyNetplanFile(ifaceName, downstreamAddress string, port uint32) (st
 func WriteSystemdServiceFile(filename, name, version string, port uint32) (string, error) {
 	path := filepath.Join(models.SystemdPath, filename+".service")
 	content := fmt.Sprintf(template.SystemdTemplate,
-		name, version, filename, version, filename, port, filename, filename,
+		name,      // Description (%s)
+		version,   // ExecStartPre envoy path (%s)
+		filename,  // ExecStartPre bootstrap (%s)
+		version,   // ExecStart envoy path (%s)
+		filename,  // ExecStart bootstrap (%s)
+		port,      // base-id (%d)
+		filename,  // log-path (%s)
+		filename,  // SyslogIdentifier (%s)
 	)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("failed to write systemd service file: %w", err)
 	}
 	return path, nil
-}
-
-func WriteJournalConf(filename string) (string, error) {
-	dst := filepath.Join("/etc/systemd",
-		fmt.Sprintf("journald@elchi-%s.conf", filename))
-
-	cmd := exec.Command("sudo", "tee", dst)
-
-	cmd.Stdin = strings.NewReader(template.JournalConf)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("tee failed: %v - %s", err, out)
-	}
-	return dst, nil
 }

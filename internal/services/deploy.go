@@ -188,19 +188,6 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 	}
 	state.CreatedFiles = append(state.CreatedFiles, servicePath)
 
-	journalPath, err := files.WriteJournalConf(filename)
-	if err != nil {
-		cleanupAndRollback(state, s.logger, s.runner)
-		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to write journal config: %v", err))
-	}
-	state.CreatedFiles = append(state.CreatedFiles, journalPath)
-
-	// Restart journald to apply new journal configuration
-	if err := s.runner.RunWithS("systemctl", "restart", "systemd-journald"); err != nil {
-		s.logger.Warnf("Failed to restart journald: %v", err)
-		// Non-critical error - continue with deployment
-	}
-
 	// Reload systemd to recognize new service file
 	if err := s.runner.RunWithS("systemctl", "daemon-reload"); err != nil {
 		cleanupAndRollback(state, s.logger, s.runner)

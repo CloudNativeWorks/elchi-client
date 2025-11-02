@@ -79,8 +79,11 @@ func GetServiceStatus(serviceName string, logger *logger.Logger, runner *cmdrunn
 		serviceName = serviceName + ".service"
 	}
 
-	output, err := runner.RunWithOutputS("systemctl", "status", serviceName)
+	// Use RunWithOutputSNoErrLog because systemctl status returns non-zero exit codes
+	// for inactive/failed services, which is expected behavior
+	output, err := runner.RunWithOutputSNoErrLog("systemctl", "status", serviceName)
 	if err != nil {
+		// Even if command failed, we can still parse the output
 		if !strings.Contains(string(output), "could not be found") {
 			status, parseErr := parseServiceStatus(string(output))
 			if parseErr == nil {
@@ -101,6 +104,10 @@ func GetServiceStatus(serviceName string, logger *logger.Logger, runner *cmdrunn
 func ServiceControl(serviceName string, action client.SubCommandType, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
 	if !strings.HasSuffix(serviceName, ".service") {
 		serviceName = serviceName + ".service"
+	}
+
+	if strings.HasPrefix(serviceName, "syslog.socket") {
+		serviceName = "syslog.socket"
 	}
 
 	var cmd *exec.Cmd
@@ -133,20 +140,4 @@ func ServiceControl(serviceName string, action client.SubCommandType, logger *lo
 	}
 
 	return status, nil
-}
-
-func ActivateService(filename string, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
-	if err := runner.RunWithS("systemctl", "daemon-reload"); err != nil {
-		logger.Errorf("Failed to reload systemd: %v", err)
-		return fmt.Errorf("failed to reload systemd: %w", err)
-	}
-
-	serviceName := filename + ".service"
-	if err := runner.RunWithS("systemctl", "enable", "--now", serviceName); err != nil {
-		logger.Errorf("Failed to enable/start service: %v", err)
-		return fmt.Errorf("failed to enable/start service: %w", err)
-	}
-	logger.Debugf("Service %s activated", serviceName)
-
-	return nil
 }

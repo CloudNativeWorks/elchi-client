@@ -53,3 +53,12 @@ func (r *CommandsRunner) RunAndTrimmedOutput(cmd string, args ...string) (string
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// RunWithOutputSNoErrLog runs command with sudo and returns output without logging errors
+// Useful for commands like "systemctl status" where non-zero exit codes are expected
+func (r *CommandsRunner) RunWithOutputSNoErrLog(cmd string, args ...string) ([]byte, error) {
+	c := exec.Command("sudo", append([]string{cmd}, args...)...)
+	output, err := c.CombinedOutput()
+	// Don't log error - caller will handle it
+	return output, err
+}

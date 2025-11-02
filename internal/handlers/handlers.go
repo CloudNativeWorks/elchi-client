@@ -45,3 +45,11 @@ func (h *EnvoyVersionCommandHandler) Handle(cmd *client.Command) *client.Command
 func (h *WafVersionCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
 	return h.services.WafVersionService(cmd)
 }
+
+func (h *FilebeatCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
+	return h.services.FilebeatService(cmd)
+}
+
+func (h *RsyslogCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
+	return h.services.RsyslogService(cmd)
+}

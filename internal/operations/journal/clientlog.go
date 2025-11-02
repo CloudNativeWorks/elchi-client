@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/CloudNativeWorks/elchi-proto/client"
 )
 
 func GetLastNGeneralLogs(identifier string, count uint32) ([]*client.GeneralLogs, error) {
-	logPath := "/var/log/elchi/" + identifier + ".log"
+	logPath := "/var/log/" + identifier + ".log"
 
 	lines, err := readLastNLinesFromRotatedLogs(logPath, count)
 	if err != nil {
@@ -64,31 +63,8 @@ func GetLastNGeneralLogs(identifier string, count uint32) ([]*client.GeneralLogs
 }
 
 func readLastNLinesFromRotatedLogs(basePath string, n uint32) ([]string, error) {
-	files := getOrderedLogFiles(basePath)
-
-	var allLines []string
-	for _, file := range files {
-		var lines []string
-		var err error
-		if strings.HasSuffix(file, ".gz") {
-			lines, err = readAllLinesGz(file, n)
-		} else {
-			lines, err = readAllLines(file, n)
-		}
-		if err != nil {
-			continue
-		}
-		for i := len(lines) - 1; i >= 0 && uint32(len(allLines)) < n; i-- {
-			allLines = append(allLines, lines[i])
-		}
-		if uint32(len(allLines)) >= n {
-			break
-		}
-	}
-	for i, j := 0, len(allLines)-1; i < j; i, j = i+1, j-1 {
-		allLines[i], allLines[j] = allLines[j], allLines[i]
-	}
-	return allLines, nil
+	// Only read the main log file (no rotated or compressed files)
+	return readAllLines(basePath, n)
 }
 
 

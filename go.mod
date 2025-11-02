@@ -3,7 +3,7 @@ module github.com/CloudNativeWorks/elchi-client
 go 1.24.1
 
 require (
-	github.com/CloudNativeWorks/elchi-proto v0.0.0-20251020193347-6dbed15ae8ed
+	github.com/CloudNativeWorks/elchi-proto v0.0.0-20251028110815-ea6aa9604335
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/google/uuid v1.6.0
 	github.com/sirupsen/logrus v1.9.3
@@ -38,7 +38,7 @@ require (
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/net v0.42.0 // indirect
-	golang.org/x/sys v0.34.0
+	golang.org/x/sys v0.34.0 // indirect
 	golang.org/x/text v0.27.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250721164621-a45f3dfb1074 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect

@@ -30,6 +30,7 @@ ExecStart=/usr/bin/env python3 /var/lib/elchi/hotrestarter/hotrestarter.py \
   "/var/lib/elchi/envoys/%s/envoy \
      -c /var/lib/elchi/bootstraps/%s.yaml \
      --base-id %d \
+     --log-path /var/log/elchi/%s_system.log \
      --drain-time-s 10 \
      --parent-shutdown-time-s 20"
 
@@ -40,9 +41,6 @@ KillMode=process
 Restart=on-failure
 RestartSec=30
 
-LogNamespace=elchi-%s
-StandardOutput=journal
-StandardError=journal
 SyslogIdentifier=elchi-%s
 
 [Install]

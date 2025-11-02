@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,21 +134,6 @@ func initLogger(cfg *LoggingConfig) error {
 	}
 
 	return logger.Init(logConfig)
-}
-
-// SaveConfig saves configuration to file
-func SaveConfig(config *Config, path string) error {
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, data, 0644)
 }
 
 // DefaultConfig returns a default configuration
