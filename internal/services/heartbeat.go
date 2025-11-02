@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	HeartbeatInterval = 5 * time.Minute
+	HeartbeatInterval = 1 * time.Minute
 	PingTimeout       = 10 * time.Second
 )
 
