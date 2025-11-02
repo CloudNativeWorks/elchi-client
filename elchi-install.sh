@@ -268,6 +268,38 @@ EOF
 }
 
 ###############################################################################
+# ELASTIC REPOSITORY SETUP
+# Add Elastic's official APT repository for Filebeat installation
+###############################################################################
+
+setup_elastic_repository() {
+  info "📦 Setting up Elastic APT repository"
+
+  # Check if repository is already configured
+  if [[ -f /etc/apt/sources.list.d/elastic-8.x.list ]]; then
+    ok "✅ Elastic repository already configured"
+    return 0
+  fi
+
+  # Install prerequisites
+  info "🔧 Installing prerequisites for Elastic repository"
+  run apt-get install -y curl gnupg apt-transport-https
+
+  # Add Elastic GPG key
+  info "🔑 Adding Elastic GPG key"
+  curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /usr/share/keyrings/elastic-keyring.gpg
+
+  # Add Elastic repository
+  info "📦 Adding Elastic 8.x repository"
+  echo "deb [signed-by=/usr/share/keyrings/elastic-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main" | tee /etc/apt/sources.list.d/elastic-8.x.list > /dev/null
+
+  # Update package cache
+  run apt-get update -qq
+
+  ok "✅ Elastic repository configured"
+}
+
+###############################################################################
 # FRR INSTALLATION AND CONFIGURATION
 # Install FRR 10.4.0 from official repository with zebra + bgpd only
 # gRPC enabled, auto-save configuration enabled
@@ -1304,6 +1336,7 @@ run systemctl enable --now elchi-client.service
 
 # Configure system components
 setup_sources_list
+setup_elastic_repository
 ensure_yq_installed
 ensure_required_tools
 
