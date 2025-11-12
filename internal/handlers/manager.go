@@ -28,6 +28,7 @@ func NewCommandRegistry(services *services.Services) *CommandRegistry {
 	registry.Register(client.CommandType_WAF_VERSION, &WafVersionCommandHandler{services: services})
 	registry.Register(client.CommandType_FILEBEAT, &FilebeatCommandHandler{services: services})
 	registry.Register(client.CommandType_RSYSLOG, &RsyslogCommandHandler{services: services})
+	registry.Register(client.CommandType_UPGRADE_LISTENER, &UpgradeListenerCommandHandler{services: services})
 
 	return registry
 }

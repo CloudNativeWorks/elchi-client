@@ -69,3 +69,7 @@ type FilebeatCommandHandler struct {
 type RsyslogCommandHandler struct {
 	services *services.Services
 }
+
+type UpgradeListenerCommandHandler struct {
+	services *services.Services
+}

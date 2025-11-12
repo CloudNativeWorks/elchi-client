@@ -53,3 +53,7 @@ func (h *FilebeatCommandHandler) Handle(cmd *client.Command) *client.CommandResp
 func (h *RsyslogCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
 	return h.services.RsyslogService(cmd)
 }
+
+func (h *UpgradeListenerCommandHandler) Handle(cmd *client.Command) *client.CommandResponse {
+	return h.services.UpgradeListenerService(cmd)
+}
