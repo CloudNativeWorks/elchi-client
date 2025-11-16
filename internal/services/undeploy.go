@@ -53,23 +53,34 @@ func (s *Services) UndeployService(cmd *client.Command) *client.CommandResponse 
 	}
 
 	// Step 1: Remove runtime network interface first (netlink)
+	// Use best-effort approach - continue cleanup even if interface deletion fails
 	s.logger.WithFields(logger.Fields{
 		"interface_name": ifaceName,
 	}).Debug("Removing network interface from runtime")
 
+	var cleanupErrors []string
 	if err := network.DeleteDummyInterface(ifaceName, s.logger); err != nil {
-		s.logger.Errorf("Failed to delete interface %s: %v", ifaceName, err)
-		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to delete interface: %v", err))
+		s.logger.Warnf("Failed to delete interface %s: %v (continuing with cleanup)", ifaceName, err)
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("interface deletion: %v", err))
 	}
 
 	// Step 2: Remove persistent configuration files (including netplan)
+	// Continue even if some files fail to delete
 	s.logger.Debug("Removing configuration files")
 	filesResult := files.DeleteServiceFiles(undeployReq.GetName(), undeployReq.GetPort(), ifaceName, s.logger)
+
+	// Track file deletion errors
+	if len(filesResult.Errors) > 0 {
+		for _, err := range filesResult.Errors {
+			cleanupErrors = append(cleanupErrors, fmt.Sprintf("file deletion: %v", err))
+		}
+	}
 
 	// Only reload systemd if service files were deleted or service existed
 	if serviceExists || len(filesResult.DeletedFiles) > 0 {
 		if err := s.runner.RunWithS("systemctl", "daemon-reload"); err != nil {
 			s.logger.Warnf("Failed to reload systemd daemon: %v", err)
+			cleanupErrors = append(cleanupErrors, fmt.Sprintf("systemd reload: %v", err))
 		}
 	}
 
@@ -83,11 +94,22 @@ func (s *Services) UndeployService(cmd *client.Command) *client.CommandResponse 
 		fileList = "No files were deleted"
 	}
 
-	s.logger.WithFields(logger.Fields{
-		"service_name":  undeployReq.GetName(),
-		"port":          undeployReq.GetPort(),
-		"deleted_files": fileList,
-	}).Debug("Successfully undeployed service")
+	// Log final status with error details if any
+	if len(cleanupErrors) > 0 {
+		errorSummary := strings.Join(cleanupErrors, "; ")
+		s.logger.WithFields(logger.Fields{
+			"service_name":  undeployReq.GetName(),
+			"port":          undeployReq.GetPort(),
+			"deleted_files": fileList,
+			"errors":        errorSummary,
+		}).Warnf("Undeploy completed with warnings: %s", errorSummary)
+	} else {
+		s.logger.WithFields(logger.Fields{
+			"service_name":  undeployReq.GetName(),
+			"port":          undeployReq.GetPort(),
+			"deleted_files": fileList,
+		}).Debug("Successfully undeployed service")
+	}
 
 	return &client.CommandResponse{
 		Identity:  cmd.Identity,

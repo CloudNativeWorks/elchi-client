@@ -67,11 +67,16 @@ func UpdateBootstrapVersion(serviceName, fromVersion, toVersion string, logger *
 		return "", fmt.Errorf("failed to read bootstrap file: %w", err)
 	}
 
-	// Update version paths
+	// Update version paths in bootstrap file
 	oldVersionPath := fmt.Sprintf("/var/lib/elchi/envoys/%s/envoy", fromVersion)
 	newVersionPath := fmt.Sprintf("/var/lib/elchi/envoys/%s/envoy", toVersion)
 
 	updatedContent := strings.ReplaceAll(string(currentContent), oldVersionPath, newVersionPath)
+
+	// Update envoy-version metadata
+	oldVersionMetadata := fmt.Sprintf("value: %s", fromVersion)
+	newVersionMetadata := fmt.Sprintf("value: %s", toVersion)
+	updatedContent = strings.ReplaceAll(updatedContent, oldVersionMetadata, newVersionMetadata)
 
 	// Write updated bootstrap file
 	if err := os.WriteFile(bootstrapPath, []byte(updatedContent), 0644); err != nil {
@@ -99,13 +104,13 @@ func RestartService(serviceName string, graceful bool, logger *logger.Logger, ru
 	var err error
 
 	if graceful {
-		// Graceful restart using reload
-		logger.Infof("Performing graceful restart (reload) for service %s", serviceFile)
-		_, err = systemd.ServiceControl(serviceFile, client.SubCommandType_SUB_RELOAD, logger, runner)
+		// Graceful restart - using restart instead of reload because binary changes
+		logger.Infof("Performing graceful restart for service %s", serviceFile)
+		_, err = systemd.ServiceControl(serviceFile, client.SubCommandType_SUB_RESTART, logger, runner)
 		if err != nil {
-			return "", fmt.Errorf("failed to reload service: %w", err)
+			return "", fmt.Errorf("failed to restart service: %w", err)
 		}
-		restartStatus = "graceful reload completed"
+		restartStatus = "graceful restart completed"
 	} else {
 		// Hard restart
 		logger.Infof("Performing hard restart for service %s", serviceFile)

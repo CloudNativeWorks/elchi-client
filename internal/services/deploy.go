@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/network"
 	"github.com/CloudNativeWorks/elchi-client/pkg/helper"
 	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
+	"github.com/CloudNativeWorks/elchi-client/pkg/models"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 	"github.com/vishvananda/netlink"
 )
@@ -78,7 +80,7 @@ func cleanupAndRollback(state DeployState, logger *logger.Logger, runner *cmdrun
 }
 
 // validateDeploymentPrerequisites checks if deployment can proceed
-func validateDeploymentPrerequisites(deployReq *client.RequestDeploy, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+func validateDeploymentPrerequisites(deployReq *client.RequestDeploy, _ *logger.Logger, runner *cmdrunner.CommandsRunner) error {
 	// Check if port is already in use by another deployment
 	activeDeploymentsMu.RLock()
 	if existingService, exists := activeDeployments[deployReq.GetPort()]; exists {
@@ -123,13 +125,83 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 	deploymentLock.Lock()
 	defer deploymentLock.Unlock()
 
-	// Validate prerequisites
+	// Check if deployment already exists and needs update
+	checkResult, err := CheckExistingDeployment(deployReq, s.logger, s.runner)
+	if err != nil {
+		s.logger.Warnf("Failed to check existing deployment: %v, proceeding with full deployment", err)
+	}
+
+	// If deployment exists and doesn't need update, return success immediately
+	if checkResult != nil && checkResult.Exists && !checkResult.NeedsUpdate {
+		s.logger.Infof("Deployment %s-%d already exists with no changes, skipping deployment", deployReq.GetName(), deployReq.GetPort())
+		filename := fmt.Sprintf("%s-%d", deployReq.GetName(), deployReq.GetPort())
+
+		// Ensure it's tracked in active deployments
+		activeDeploymentsMu.Lock()
+		activeDeployments[deployReq.GetPort()] = filename
+		activeDeploymentsMu.Unlock()
+
+		return &client.CommandResponse{
+			Identity:  cmd.Identity,
+			CommandId: cmd.CommandId,
+			Success:   true,
+			Result: &client.CommandResponse_Deploy{
+				Deploy: &client.ResponseDeploy{
+					Files:             filepath.Join(models.ElchiLibPath, "bootstraps", filename+".yaml"),
+					Service:           filepath.Join(models.SystemdPath, filename+".service"),
+					Network:           filepath.Join(models.NetplanPath, fmt.Sprintf("90-elchi-if-%d.yaml", deployReq.GetPort())),
+					DownstreamAddress: deployReq.GetDownstreamAddress(),
+					Port:              deployReq.GetPort(),
+					InterfaceId:       deployReq.GetInterfaceId(),
+					IpMode:            deployReq.GetIpMode(),
+					Version:           deployReq.GetVersion(),
+				},
+			},
+		}
+	}
+
+	// If deployment exists but needs update, apply only changes
+	if checkResult != nil && checkResult.Exists && checkResult.NeedsUpdate {
+		s.logger.Infof("Updating existing deployment %s-%d", deployReq.GetName(), deployReq.GetPort())
+		if err := ApplyDeploymentUpdates(deployReq, checkResult, s.logger, s.runner); err != nil {
+			s.logger.Errorf("Failed to apply deployment updates: %v", err)
+			return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to apply deployment updates: %v", err))
+		}
+
+		filename := fmt.Sprintf("%s-%d", deployReq.GetName(), deployReq.GetPort())
+
+		// Ensure it's tracked in active deployments
+		activeDeploymentsMu.Lock()
+		activeDeployments[deployReq.GetPort()] = filename
+		activeDeploymentsMu.Unlock()
+
+		s.logger.Infof("Successfully updated deployment %s on port %d", deployReq.Name, deployReq.GetPort())
+		return &client.CommandResponse{
+			Identity:  cmd.Identity,
+			CommandId: cmd.CommandId,
+			Success:   true,
+			Result: &client.CommandResponse_Deploy{
+				Deploy: &client.ResponseDeploy{
+					Files:             filepath.Join(models.ElchiLibPath, "bootstraps", filename+".yaml"),
+					Service:           filepath.Join(models.SystemdPath, filename+".service"),
+					Network:           filepath.Join(models.NetplanPath, fmt.Sprintf("90-elchi-if-%d.yaml", deployReq.GetPort())),
+					DownstreamAddress: deployReq.GetDownstreamAddress(),
+					Port:              deployReq.GetPort(),
+					InterfaceId:       deployReq.GetInterfaceId(),
+					IpMode:            deployReq.GetIpMode(),
+					Version:           deployReq.GetVersion(),
+				},
+			},
+		}
+	}
+
+	// Fresh deployment - validate prerequisites
 	if err := validateDeploymentPrerequisites(deployReq, s.logger, s.runner); err != nil {
 		s.logger.Errorf("deployment validation failed: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("deployment validation failed: %v", err))
 	}
 
-	s.logger.Infof("Deploying service: %s on port %d", deployReq.Name, deployReq.GetPort())
+	s.logger.Infof("Deploying new service: %s on port %d", deployReq.Name, deployReq.GetPort())
 	filename := fmt.Sprintf("%s-%d", deployReq.GetName(), deployReq.GetPort())
 	ifaceName := fmt.Sprintf("elchi-if-%d", deployReq.GetPort())
 
