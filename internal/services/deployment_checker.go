@@ -21,22 +21,22 @@ import (
 
 // DeploymentCheckResult contains information about what needs to be updated
 type DeploymentCheckResult struct {
-	Exists            bool
-	NeedsUpdate       bool
-	BootstrapChanged  bool
-	InterfaceChanged  bool
-	ServiceChanged    bool
+	Exists              bool
+	NeedsUpdate         bool
+	BootstrapChanged    bool
+	InterfaceChanged    bool
+	ServiceChanged      bool
 	ServiceNeedsRestart bool
 }
 
 // CheckExistingDeployment checks if a deployment exists and if it needs updates
 func CheckExistingDeployment(deployReq *client.RequestDeploy, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*DeploymentCheckResult, error) {
 	result := &DeploymentCheckResult{
-		Exists:            false,
-		NeedsUpdate:       false,
-		BootstrapChanged:  false,
-		InterfaceChanged:  false,
-		ServiceChanged:    false,
+		Exists:              false,
+		NeedsUpdate:         false,
+		BootstrapChanged:    false,
+		InterfaceChanged:    false,
+		ServiceChanged:      false,
 		ServiceNeedsRestart: false,
 	}
 
@@ -252,20 +252,13 @@ func ApplyDeploymentUpdates(deployReq *client.RequestDeploy, checkResult *Deploy
 	if checkResult.InterfaceChanged {
 		logger.Infof("Updating interface %s", ifaceName)
 
-		// Write netplan file if missing
-		netplanPath := filepath.Join(models.NetplanPath, fmt.Sprintf("90-%s.yaml", ifaceName))
-		if _, err := os.Stat(netplanPath); os.IsNotExist(err) {
-			logger.Infof("Creating missing netplan file for %s", ifaceName)
-			if err := network.SetupDummyInterfaceWithNetlink(ifaceName, deployReq.GetDownstreamAddress(), logger); err != nil {
-				return fmt.Errorf("failed to setup interface: %w", err)
-			}
-		} else {
-			// Just update the IP if netplan exists
-			if err := network.SetupDummyInterfaceWithNetlink(ifaceName, deployReq.GetDownstreamAddress(), logger); err != nil {
-				return fmt.Errorf("failed to update interface: %w", err)
-			}
+		// Always setup dummy interface with both netplan and runtime configuration
+		// SetupDummyInterface writes netplan file and configures interface via netlink
+		netplanPath, createdIfaceName, err := network.SetupDummyInterface(filename, ifaceName, deployReq.GetDownstreamAddress(), deployReq.GetPort(), logger)
+		if err != nil {
+			return fmt.Errorf("failed to setup interface: %w", err)
 		}
-		logger.Infof("Interface updated: %s", ifaceName)
+		logger.Infof("Interface updated: %s (netplan: %s)", createdIfaceName, netplanPath)
 	}
 
 	// Update service file if changed
