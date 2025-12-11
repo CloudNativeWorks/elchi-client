@@ -138,24 +138,19 @@ func (h *HeartbeatService) Start() error {
 func (h *HeartbeatService) Stop() {
 	h.mu.Lock()
 
-	if !h.running {
-		h.mu.Unlock()
-		h.logger.Debug("Heartbeat service is not running")
-		return
-	}
-
 	h.logger.Info("Stopping heartbeat service")
 
-	// Cancel the main run context
+	// Cancel the main run context (if Start() was called)
 	if h.cancel != nil {
 		h.cancel()
 	}
 
-	// Cancel the connection monitor context
+	// Cancel the connection monitor context (if Initialize() was called)
 	if h.monitorCancel != nil {
 		h.monitorCancel()
 	}
 
+	wasRunning := h.running
 	h.running = false
 	h.mu.Unlock()
 
@@ -168,7 +163,11 @@ func (h *HeartbeatService) Stop() {
 
 	select {
 	case <-done:
-		h.logger.Info("Heartbeat service stopped gracefully")
+		if wasRunning {
+			h.logger.Info("Heartbeat service stopped gracefully")
+		} else {
+			h.logger.Debug("Heartbeat service cleanup completed")
+		}
 	case <-time.After(5 * time.Second):
 		h.logger.Warn("Heartbeat service stop timed out")
 	}
