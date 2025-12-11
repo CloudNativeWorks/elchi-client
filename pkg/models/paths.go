@@ -1,0 +1,30 @@
+package models
+
+const (
+	BootstrapsPath  = "/var/lib/elchi/bootstraps"
+	NetplanPath     = "/etc/netplan"
+	SystemdPath     = "/usr/lib/systemd/system"
+	SystemdRootPath = "/etc/systemd"
+	JournalLogPath  = "/var/log/journal"
+	ElchiPath       = "/etc/elchi"
+	ElchiLibPath    = "/var/lib/elchi"
+	EtcPath         = "/etc"
+	UsrPath         = "/usr"
+	DevPath         = "/dev/"
+	ProcPath        = "/proc"
+
+	MachineID         = "/etc/machine-id"
+	OsRelease         = "/etc/os-release"
+	ProcVersion       = "/proc/version"
+	ProcUptime        = "/proc/uptime"
+	ProcNetTcp        = "/proc/net/tcp"
+	ProcNetUdp        = "/proc/net/udp"
+	ProcMounts        = "/proc/mounts"
+	ProcMemInfo       = "/proc/meminfo"
+	ProcDiskStats     = "/proc/diskstats"
+	ProcLoadavg       = "/proc/loadavg"
+	ProcStat          = "/proc/stat"
+	NetDir            = "/sys/class/net"
+	CpuTemp           = "/sys/class/thermal/thermal_zone0/temp"
+	InterfaceTableMap = "/etc/iproute2/rt_tables.d/elchi.conf"
+)

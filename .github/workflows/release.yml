@@ -1,0 +1,161 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24.1'
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y build-essential pkg-config libsystemd-dev
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Build for Linux AMD64
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -tags systemd -ldflags="-w -s -X main.version=$VERSION" -o elchi-client-linux-amd64 main.go
+
+    - name: Create checksum
+      run: |
+        sha256sum elchi-client-linux-amd64 > elchi-client-linux-amd64.sha256
+
+    - name: Upload Linux AMD64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-amd64
+        path: |
+          elchi-client-linux-amd64
+          elchi-client-linux-amd64.sha256
+
+  release:
+    needs: [build-linux-amd64]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        merge-multiple: true
+
+    - name: Prepare config file
+      run: |
+        cp config_template.yaml config.yaml
+
+    - name: Create and push tag
+      run: |
+        VERSION="${{ github.event.inputs.version }}"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag "v$VERSION"
+        git push origin "v$VERSION"
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          elchi-client-linux-amd64
+          elchi-client-linux-amd64.sha256
+          elchi-install.sh
+          config.yaml
+          LICENSE
+        tag_name: v${{ github.event.inputs.version }}
+        name: Elchi Client v${{ github.event.inputs.version }}
+        body: |
+          ## Elchi Client v${{ github.event.inputs.version }}
+
+          ### Download:
+
+          **Linux AMD64:**
+          - `elchi-client-linux-amd64`
+          - `elchi-client-linux-amd64.sha256`
+
+          ### Installation:
+
+          ```bash
+          # Download installer
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/elchi-install.sh
+
+          # Production setup (cloud defaults to 'other')
+          sudo bash elchi-install.sh \
+            --name=web-server-01 \
+            --host=backend.elchi.io \
+            --port=443 \
+            --tls=true \
+            --token=your-auth-token
+
+          # OpenStack deployment (use your cloud name from UI)
+          sudo bash elchi-install.sh \
+            --name=openstack-vm \
+            --host=controller.elchi.io \
+            --port=443 \
+            --tls=true \
+            --token=prod-token \
+            --cloud=my-openstack
+
+          # With BGP routing
+          sudo bash elchi-install.sh \
+            --enable-bgp \
+            --name=edge-router \
+            --host=controller.elchi.io \
+            --port=443 \
+            --tls=true \
+            --token=prod-token \
+            --cloud=production
+          ```
+
+          ### Configuration Options:
+
+          **Required Parameters:**
+          - `--name=NAME`: Client name
+          - `--host=HOST`: Server address
+          - `--port=PORT`: Server port (1-65535)
+          - `--tls=true|false`: Enable TLS
+          - `--token=TOKEN`: Authentication token (min 8 chars)
+
+          **Optional Parameters:**
+          - `--cloud=CLOUD`: Cloud/infrastructure provider (defaults to 'other')
+          - `--enable-bgp`: Install FRR routing
+
+          **Important Note:**
+          - If you are deploying on OpenStack, specify `--cloud=YOUR_CLOUD_NAME` (use the cloud name from your UI)
+
+          ### Manual Installation:
+
+          ```bash
+          wget https://github.com/${{ github.repository }}/releases/download/v${{ github.event.inputs.version }}/elchi-client-linux-amd64
+          sudo mv elchi-client-linux-amd64 /usr/local/bin/elchi-client
+          sudo chmod +x /usr/local/bin/elchi-client
+          ```
+
+          ### Verification:
+
+          ```bash
+          sha256sum -c elchi-client-linux-amd64.sha256
+          ```
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
