@@ -160,72 +160,85 @@ func (m *SessionManager) mainLoop() error {
 	backoffDuration := time.Second
 
 	for {
+		// Context check at loop start
 		select {
 		case <-m.ctx.Done():
 			return nil
 		default:
-			// Connection attempt
-			if err := m.session.Connect(m.ctx); err != nil {
-				if m.ctx.Err() != nil {
-					return nil
-				}
+		}
 
-				retryCount++
-				m.logger.Warnf("Connection error (%d/%d) retrying: %v", retryCount, maxRetries, err)
-
-				if retryCount >= maxRetries {
-					m.logger.Error("Max retry attempts reached, exiting")
-					return fmt.Errorf("failed to connect after %d attempts", maxRetries)
-				}
-
-				// Exponential backoff
-				sleepDuration := backoffDuration * time.Duration(1<<uint(retryCount-1))
-				if sleepDuration > 30*time.Second {
-					sleepDuration = 30 * time.Second
-				}
-
-				m.logger.Infof("Waiting %v before next retry", sleepDuration)
-				select {
-				case <-m.ctx.Done():
-					return nil
-				case <-time.After(sleepDuration):
-				}
-
-				continue
+		// Connection attempt
+		if err := m.session.Connect(m.ctx); err != nil {
+			if m.ctx.Err() != nil {
+				return nil
 			}
 
-			// When connection is successful, reset retry count
-			retryCount = 0
+			retryCount++
+			m.logger.Warnf("Connection error (%d/%d) retrying: %v", retryCount, maxRetries, err)
 
-			// Create error channel for stream management
-			streamErrChan := make(chan error, 1)
+			if retryCount >= maxRetries {
+				m.logger.Error("Max retry attempts reached, exiting")
+				return fmt.Errorf("failed to connect after %d attempts", maxRetries)
+			}
 
-			// Start stream management in a goroutine
-			go func() {
-				for {
-					if err := m.handleCommandStream(); err != nil {
-						m.logger.Warnf("Stream error: %v", err)
-						streamErrChan <- err
-						return
-					}
-				}
-			}()
+			// Exponential backoff
+			sleepDuration := backoffDuration * time.Duration(1<<uint(retryCount-1))
+			if sleepDuration > 30*time.Second {
+				sleepDuration = 30 * time.Second
+			}
 
-			// Wait for stream error or context cancellation
+			m.logger.Infof("Waiting %v before next retry", sleepDuration)
 			select {
 			case <-m.ctx.Done():
 				return nil
-			case err := <-streamErrChan:
-				m.logger.Warnf("Stream error received, reconnecting: %v", err)
+			case <-time.After(sleepDuration):
+			}
 
-				// Clean up the connection
-				m.session.Lock()
-				m.session.isConnected = false
-				m.session.sessionToken = ""
-				m.session.Unlock()
+			continue
+		}
 
-				// Add a small delay before reconnecting
-				time.Sleep(time.Second)
+		// When connection is successful, reset retry count
+		retryCount = 0
+
+		// Create a cancellable context for this stream session
+		streamCtx, streamCancel := context.WithCancel(m.ctx)
+		streamErrChan := make(chan error, 1)
+		streamDone := make(chan struct{})
+
+		// Start stream management in a goroutine
+		go func() {
+			defer close(streamDone)
+			if err := m.handleCommandStream(streamCtx); err != nil {
+				select {
+				case streamErrChan <- err:
+				default:
+				}
+			}
+		}()
+
+		// Wait for stream error or context cancellation
+		select {
+		case <-m.ctx.Done():
+			streamCancel()
+			<-streamDone // Wait for goroutine to finish
+			return nil
+
+		case err := <-streamErrChan:
+			m.logger.Warnf("Stream error received, reconnecting: %v", err)
+			streamCancel()
+			<-streamDone // Wait for goroutine to finish
+
+			// Clean up the connection
+			m.session.Lock()
+			m.session.isConnected = false
+			m.session.sessionToken = ""
+			m.session.Unlock()
+
+			// Context-aware sleep before reconnecting
+			select {
+			case <-m.ctx.Done():
+				return nil
+			case <-time.After(time.Second):
 			}
 		}
 	}
@@ -331,50 +344,50 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 }
 
 // handleCommandStream manages the command stream
-func (m *SessionManager) handleCommandStream() error {
-	streamCtx, cancel := context.WithCancel(m.ctx)
-	defer cancel()
+func (m *SessionManager) handleCommandStream(ctx context.Context) error {
+	errChan := make(chan error, 1)
+	streamDone := make(chan struct{})
 
-	for {
-		errChan := make(chan error, 1)
-		streamDone := make(chan struct{})
+	go func() {
+		defer close(streamDone)
+		m.session.StreamCommands(ctx, errChan)
+	}()
 
-		go func() {
-			defer close(streamDone)
-			m.session.StreamCommands(streamCtx, errChan)
-		}()
+	select {
+	case <-ctx.Done():
+		<-streamDone // Wait for StreamCommands to finish
+		return ctx.Err()
 
-		select {
-		case <-m.ctx.Done():
-			return nil
-		case err := <-errChan:
-			if err == nil {
-				continue
-			}
+	case err := <-errChan:
+		<-streamDone // Wait for StreamCommands to finish
 
-			if streamCtx.Err() != nil {
-				return nil
-			}
-
-			// Special handling for critical errors
-			if strings.Contains(err.Error(), "ENHANCE_YOUR_CALM") {
-				m.logger.Warn("Rate limit exceeded, waiting before reconnecting")
-				return err
-			}
-
-			// When connection is closed
-			if strings.Contains(err.Error(), "transport is closing") ||
-				strings.Contains(err.Error(), "connection is closing") {
-				m.logger.Info("Connection closed, reconnecting...")
-				return err
-			}
-
-			m.logger.Errorf("Stream error: %v", err)
-			return err
-		case <-streamDone:
-			m.logger.Info("Stream ended, restarting...")
-			return fmt.Errorf("stream ended")
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+
+		if err == nil {
+			return nil
+		}
+
+		// Special handling for critical errors
+		if strings.Contains(err.Error(), "ENHANCE_YOUR_CALM") {
+			m.logger.Warn("Rate limit exceeded, waiting before reconnecting")
+			return err
+		}
+
+		// When connection is closed
+		if strings.Contains(err.Error(), "transport is closing") ||
+			strings.Contains(err.Error(), "connection is closing") {
+			m.logger.Info("Connection closed, reconnecting...")
+			return err
+		}
+
+		m.logger.Errorf("Stream error: %v", err)
+		return err
+
+	case <-streamDone:
+		// StreamCommands finished without sending error
+		return fmt.Errorf("stream ended unexpectedly")
 	}
 }
 
@@ -470,19 +483,33 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 	currentClientID := s.clientInfo.ClientId
 	s.Unlock()
 
-	// Create stream with retry mechanism
+	// Create stream with retry mechanism (context-aware)
 	var stream client.CommandService_CommandStreamClient
 	var err error
 	maxRetries := 3
 
 	for i := 0; i < maxRetries; i++ {
+		// Context check before each attempt
+		select {
+		case <-ctx.Done():
+			errChan <- ctx.Err()
+			return
+		default:
+		}
+
 		stream, err = s.cmdClient.CommandStream(ctx)
 		if err == nil {
 			break
 		}
 		s.log.Warnf("Failed to create stream (attempt %d/%d): %v", i+1, maxRetries, err)
 		if i < maxRetries-1 {
-			time.Sleep(time.Duration(i+1) * time.Second)
+			// Context-aware sleep
+			select {
+			case <-ctx.Done():
+				errChan <- ctx.Err()
+				return
+			case <-time.After(time.Duration(i+1) * time.Second):
+			}
 		}
 	}
 
@@ -504,7 +531,7 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 
 	s.log.Debugf("Sending initial response with session token: %s", currentSessionToken)
 
-	// Send initial response with retry
+	// Send initial response with retry (context-aware)
 	for i := 0; i < maxRetries; i++ {
 		if err = stream.Send(initialResponse); err == nil {
 			s.log.Debugf("Initial response sent successfully (attempt %d)", i+1)
@@ -512,7 +539,13 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 		}
 		s.log.Warnf("Failed to send initial response (attempt %d/%d): %v", i+1, maxRetries, err)
 		if i < maxRetries-1 {
-			time.Sleep(time.Duration(i+1) * time.Second)
+			// Context-aware sleep
+			select {
+			case <-ctx.Done():
+				errChan <- ctx.Err()
+				return
+			case <-time.After(time.Duration(i+1) * time.Second):
+			}
 		}
 	}
 
@@ -523,6 +556,9 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 
 	s.log.Infof("Stream connection started (Client ID: %s, Session: %s)", currentClientID, currentSessionToken)
 
+	// Health monitor done channel - signals health monitor to stop
+	healthDone := make(chan struct{})
+
 	// Create a goroutine to monitor stream health
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -532,6 +568,8 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 			select {
 			case <-ctx.Done():
 				return
+			case <-healthDone:
+				return
 			case <-ticker.C:
 				s.RLock()
 				isConnected := s.isConnected
@@ -539,15 +577,19 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 
 				if !isConnected {
 					s.log.Warn("Stream connection lost, triggering reconnect")
-					errChan <- fmt.Errorf("stream connection lost")
+					select {
+					case errChan <- fmt.Errorf("stream connection lost"):
+					default:
+					}
 					return
 				}
 			}
 		}
 	}()
 
-	// Start command handling
+	// Start command handling - when this returns, signal health monitor to stop
 	s.handleCommands(ctx, stream, errChan)
+	close(healthDone)
 }
 
 // handleCommands processes incoming commands
