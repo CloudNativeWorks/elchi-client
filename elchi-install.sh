@@ -422,8 +422,8 @@ Priority: optional
 Standards-Version: 3.9.2
 Package: libyang2
 Version: 2.1.128-2~ubuntu24.04u1
-Maintainer: elchi-install
-Architecture: arm64
+Maintainer: elchi-install <elchi@localhost>
+Architecture: $(dpkg --print-architecture)
 Provides: libyang2
 Description: libyang2 compiled from source
  This is a dummy package to satisfy APT dependencies.
