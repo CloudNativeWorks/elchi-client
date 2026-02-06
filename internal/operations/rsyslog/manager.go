@@ -1,6 +1,7 @@
 package rsyslog
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -74,7 +75,7 @@ func GetCurrentConfig(logger *logger.Logger) (*client.RequestRsyslog, error) {
 }
 
 // UpdateConfig writes new rsyslog configuration
-func UpdateConfig(config *client.RequestRsyslog, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+func UpdateConfig(ctx context.Context, config *client.RequestRsyslog, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
 	if config.RsyslogConfig == nil || config.RsyslogConfig.RsyslogOutput == nil {
 		return fmt.Errorf("rsyslog config is nil")
 	}
@@ -129,7 +130,7 @@ action(
 `, output.Target, output.Port, output.Protocol)
 
 	// Write config directly
-	cmd := runner.SetCommandWithS("tee", rsyslogConfigPath)
+	cmd := runner.SetCommandWithS(ctx, "tee", rsyslogConfigPath)
 	cmd.Stdin = strings.NewReader(configContent)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -137,7 +138,7 @@ action(
 	}
 
 	// Set proper permissions
-	chmodCmd := runner.SetCommandWithS("chmod", "644", rsyslogConfigPath)
+	chmodCmd := runner.SetCommandWithS(ctx, "chmod", "644", rsyslogConfigPath)
 	if err := chmodCmd.Run(); err != nil {
 		logger.Warnf("Failed to set permissions: %v", err)
 	}
@@ -146,7 +147,7 @@ action(
 
 	// Restart rsyslog service to apply changes
 	logger.Infof("Restarting rsyslog service to apply configuration changes...")
-	if err := RestartService(logger, runner); err != nil {
+	if err := RestartService(ctx, logger, runner); err != nil {
 		return fmt.Errorf("config updated but failed to restart service: %w", err)
 	}
 
@@ -154,24 +155,24 @@ action(
 }
 
 // GetServiceStatus returns the current rsyslog service status using systemd package
-func GetServiceStatus(logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
-	return systemd.GetServiceStatus(rsyslogService, logger, runner)
+func GetServiceStatus(ctx context.Context, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
+	return systemd.GetServiceStatus(ctx, rsyslogService, logger, runner)
 }
 
 // ServiceControl performs service control operations (start/stop/restart/status)
 // For rsyslog, we need to control both rsyslog.service and syslog.socket
-func ServiceControl(serviceName string, action client.SubCommandType, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
+func ServiceControl(ctx context.Context, serviceName string, action client.SubCommandType, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
 	// Control syslog.socket first for stop/restart operations
 	if action == client.SubCommandType_SUB_STOP || action == client.SubCommandType_SUB_RESTART {
 		logger.Infof("Stopping syslog.socket...")
-		_, err := systemd.ServiceControl(syslogSocket, client.SubCommandType_SUB_STOP, logger, runner)
+		_, err := systemd.ServiceControl(ctx, syslogSocket, client.SubCommandType_SUB_STOP, logger, runner)
 		if err != nil {
 			logger.Warnf("Failed to stop syslog.socket: %v (continuing anyway)", err)
 		}
 	}
 
 	// Control the main rsyslog service
-	status, err := systemd.ServiceControl(serviceName, action, logger, runner)
+	status, err := systemd.ServiceControl(ctx, serviceName, action, logger, runner)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +180,7 @@ func ServiceControl(serviceName string, action client.SubCommandType, logger *lo
 	// Start syslog.socket for start/restart operations
 	if action == client.SubCommandType_SUB_START || action == client.SubCommandType_SUB_RESTART {
 		logger.Infof("Starting syslog.socket...")
-		_, err := systemd.ServiceControl(syslogSocket, client.SubCommandType_SUB_START, logger, runner)
+		_, err := systemd.ServiceControl(ctx, syslogSocket, client.SubCommandType_SUB_START, logger, runner)
 		if err != nil {
 			logger.Warnf("Failed to start syslog.socket: %v (continuing anyway)", err)
 		}
@@ -189,23 +190,23 @@ func ServiceControl(serviceName string, action client.SubCommandType, logger *lo
 }
 
 // RestartService restarts the rsyslog service and syslog.socket
-func RestartService(logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+func RestartService(ctx context.Context, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
 	// Stop syslog.socket first
 	logger.Infof("Stopping syslog.socket...")
-	_, err := systemd.ServiceControl(syslogSocket, client.SubCommandType_SUB_STOP, logger, runner)
+	_, err := systemd.ServiceControl(ctx, syslogSocket, client.SubCommandType_SUB_STOP, logger, runner)
 	if err != nil {
 		logger.Warnf("Failed to stop syslog.socket: %v (continuing anyway)", err)
 	}
 
 	// Restart rsyslog service
-	_, err = systemd.ServiceControl(rsyslogService, client.SubCommandType_SUB_RESTART, logger, runner)
+	_, err = systemd.ServiceControl(ctx, rsyslogService, client.SubCommandType_SUB_RESTART, logger, runner)
 	if err != nil {
 		return fmt.Errorf("failed to restart rsyslog: %w", err)
 	}
 
 	// Start syslog.socket
 	logger.Infof("Starting syslog.socket...")
-	_, err = systemd.ServiceControl(syslogSocket, client.SubCommandType_SUB_START, logger, runner)
+	_, err = systemd.ServiceControl(ctx, syslogSocket, client.SubCommandType_SUB_START, logger, runner)
 	if err != nil {
 		logger.Warnf("Failed to start syslog.socket: %v (continuing anyway)", err)
 	}

@@ -1008,7 +1008,7 @@ func (pm *PolicyManager) generateRemovePrefixListCommands(name string) []string 
 func (pm *PolicyManager) isCommunityListConfigured(communityList *client.BgpCommunityList) (bool, error) {
 	output, err := pm.vtysh.ExecuteCommand("show running-config")
 	if err != nil {
-		return false, fmt.Errorf("failed to get running configuration: %v", err)
+		return false, fmt.Errorf("failed to get running configuration: %w", err)
 	}
 
 	// Simple check - look for community list in configuration
@@ -1017,21 +1017,21 @@ func (pm *PolicyManager) isCommunityListConfigured(communityList *client.BgpComm
 	if communityList.Action == client.BgpRouteMapAction_ROUTE_MAP_DENY {
 		actionStr = "deny"
 	}
-	
+
 	// Use type from protobuf field
 	communityType := "standard" // Default fallback
 	if communityList.Type != "" {
 		communityType = communityList.Type
 	}
-	
+
 	// Convert community values for comparison (comma to space)
 	communityValues := communityList.CommunityValues
 	if strings.Contains(communityValues, ",") {
 		communityValues = strings.ReplaceAll(communityValues, ",", " ")
 		communityValues = strings.Join(strings.Fields(communityValues), " ")
 	}
-	
-	communityListLine := fmt.Sprintf("bgp community-list %s %s seq %d %s %s", 
+
+	communityListLine := fmt.Sprintf("bgp community-list %s %s seq %d %s %s",
 		communityType, communityList.Name, communityList.Sequence, actionStr, communityValues)
 
 	for _, line := range lines {
@@ -1047,7 +1047,7 @@ func (pm *PolicyManager) isCommunityListConfigured(communityList *client.BgpComm
 func (pm *PolicyManager) isPrefixListConfigured(prefixList *client.BgpPrefixList) (bool, error) {
 	output, err := pm.vtysh.ExecuteCommand("show running-config")
 	if err != nil {
-		return false, fmt.Errorf("failed to get running configuration: %v", err)
+		return false, fmt.Errorf("failed to get running configuration: %w", err)
 	}
 
 	// Simple check - look for prefix list in configuration
@@ -1068,7 +1068,7 @@ func (pm *PolicyManager) isPrefixListConfigured(prefixList *client.BgpPrefixList
 func (pm *PolicyManager) isRouteMapExists(name string) (bool, error) {
 	output, err := pm.vtysh.ExecuteCommand("show running-config")
 	if err != nil {
-		return false, fmt.Errorf("failed to get running configuration: %v", err)
+		return false, fmt.Errorf("failed to get running configuration: %w", err)
 	}
 
 	return strings.Contains(output, fmt.Sprintf("route-map %s", name)), nil
@@ -1078,13 +1078,13 @@ func (pm *PolicyManager) isRouteMapExists(name string) (bool, error) {
 func (pm *PolicyManager) isCommunityListExists(name string) (bool, error) {
 	output, err := pm.vtysh.ExecuteCommand("show running-config")
 	if err != nil {
-		return false, fmt.Errorf("failed to get running configuration: %v", err)
+		return false, fmt.Errorf("failed to get running configuration: %w", err)
 	}
 
 	// Check for both standard and expanded types
 	standardExists := strings.Contains(output, fmt.Sprintf("bgp community-list standard %s", name))
 	expandedExists := strings.Contains(output, fmt.Sprintf("bgp community-list expanded %s", name))
-	
+
 	return standardExists || expandedExists, nil
 }
 
@@ -1092,7 +1092,7 @@ func (pm *PolicyManager) isCommunityListExists(name string) (bool, error) {
 func (pm *PolicyManager) isPrefixListExists(name string) (bool, error) {
 	output, err := pm.vtysh.ExecuteCommand("show running-config")
 	if err != nil {
-		return false, fmt.Errorf("failed to get running configuration: %v", err)
+		return false, fmt.Errorf("failed to get running configuration: %w", err)
 	}
 
 	return strings.Contains(output, fmt.Sprintf("ip prefix-list %s", name)), nil
@@ -1188,7 +1188,7 @@ func (pm *PolicyManager) getPrefixLength(prefix string) int {
 func (pm *PolicyManager) checkPrefixListSequenceConflict(name string, sequence uint32) (string, error) {
 	output, err := pm.vtysh.ExecuteCommand("show running-config")
 	if err != nil {
-		return "", fmt.Errorf("failed to get running configuration: %v", err)
+		return "", fmt.Errorf("failed to get running configuration: %w", err)
 	}
 
 	// Look for existing prefix list entries with same name and sequence
@@ -1232,7 +1232,7 @@ func (pm *PolicyManager) applyCommands(commands []string) error {
 			}
 		}
 
-		return fmt.Errorf("commands %v failed: %v", commands, err)
+		return fmt.Errorf("commands %v failed: %w", commands, err)
 	}
 
 	return nil
@@ -1408,7 +1408,7 @@ func (pm *PolicyManager) parseCommunityListsFromConfig(config string) ([]*client
 		line = strings.TrimSpace(line)
 		// Look for community list lines: "bgp community-list TYPE NAME seq SEQUENCE permit|deny COMMUNITY_VALUES"
 		if strings.HasPrefix(line, "bgp community-list standard ") ||
-		   strings.HasPrefix(line, "bgp community-list expanded ") {
+			strings.HasPrefix(line, "bgp community-list expanded ") {
 			communityList, err := pm.parseCommunityListLine(line)
 			if err != nil {
 				pm.logger.Warn(fmt.Sprintf("Failed to parse community list line '%s': %v", line, err))

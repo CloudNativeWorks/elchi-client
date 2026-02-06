@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/CloudNativeWorks/elchi-client/pkg/models"
@@ -14,6 +15,7 @@ import (
 )
 
 var (
+	cpuMu        sync.Mutex
 	lastTotalCPU float64
 	lastIdleCPU  float64
 )
@@ -26,31 +28,31 @@ func CollectSystemStats() (*proto.ResponseClientStats, error) {
 	// Collect CPU stats
 	stats.Cpu, err = collectCPUStats()
 	if err != nil {
-		return nil, fmt.Errorf("CPU stats collection failed: %v", err)
+		return nil, fmt.Errorf("CPU stats collection failed: %w", err)
 	}
 
 	// Collect Memory stats
 	stats.Memory, err = collectMemoryStats()
 	if err != nil {
-		return nil, fmt.Errorf("memory stats collection failed: %v", err)
+		return nil, fmt.Errorf("memory stats collection failed: %w", err)
 	}
 
 	// Collect Disk stats
 	stats.Disk, err = collectDiskStats()
 	if err != nil {
-		return nil, fmt.Errorf("disk stats collection failed: %v", err)
+		return nil, fmt.Errorf("disk stats collection failed: %w", err)
 	}
 
 	// Collect Network stats
 	stats.Network, err = collectNetworkStats()
 	if err != nil {
-		return nil, fmt.Errorf("network stats collection failed: %v", err)
+		return nil, fmt.Errorf("network stats collection failed: %w", err)
 	}
 
 	// Collect System info
 	stats.System, err = collectSystemInfo()
 	if err != nil {
-		return nil, fmt.Errorf("system info collection failed: %v", err)
+		return nil, fmt.Errorf("system info collection failed: %w", err)
 	}
 
 	return stats, nil
@@ -75,13 +77,17 @@ func collectCPUStats() (*proto.CPUStats, error) {
 				total := 0.0
 				idle := 0.0
 				for i := 1; i < len(fields); i++ {
-					val, _ := strconv.ParseFloat(fields[i], 64)
+					val, err := strconv.ParseFloat(fields[i], 64)
+					if err != nil {
+						continue
+					}
 					total += val
 					if i == 4 {
 						idle = val
 					}
 				}
 
+				cpuMu.Lock()
 				if lastTotalCPU > 0 {
 					totalDiff := total - lastTotalCPU
 					idleDiff := idle - lastIdleCPU
@@ -90,14 +96,17 @@ func collectCPUStats() (*proto.CPUStats, error) {
 						stats.UsagePercent = 100 - idlePercent
 					}
 				}
-
 				lastTotalCPU = total
 				lastIdleCPU = idle
+				cpuMu.Unlock()
 			} else if strings.HasPrefix(fields[0], "cpu") {
 				total := 0.0
 				idle := 0.0
 				for i := 1; i < len(fields); i++ {
-					val, _ := strconv.ParseFloat(fields[i], 64)
+					val, err := strconv.ParseFloat(fields[i], 64)
+					if err != nil {
+						continue
+					}
 					total += val
 					if i == 4 {
 						idle = val
@@ -174,20 +183,20 @@ func collectMemoryStats() (*proto.MemoryStats, error) {
 	stats.Free = memInfo["MemFree"]
 	stats.Cached = memInfo["Cached"]
 	stats.Buffers = memInfo["Buffers"]
-	
+
 	// Available memory calculate
 	available := memInfo["MemAvailable"]
 	if available == 0 {
 		// Old kernels don't have MemAvailable, calculate manually
 		available = stats.Free + stats.Cached + stats.Buffers
 	}
-	
+
 	// Real used memory = Total - Available
 	stats.Used = stats.Total - available
 	if stats.Total > 0 {
 		stats.UsagePercent = float64(stats.Used) / float64(stats.Total) * 100
 	}
-	
+
 	stats.SwapTotal = memInfo["SwapTotal"]
 	stats.SwapFree = memInfo["SwapFree"]
 	stats.SwapUsed = stats.SwapTotal - stats.SwapFree
@@ -346,7 +355,10 @@ func collectSystemInfo() (*proto.SystemInfo, error) {
 
 	// Get kernel version
 	if kernel, err := os.ReadFile(models.ProcVersion); err == nil {
-		info.KernelVersion = strings.Fields(string(kernel))[2]
+		fields := strings.Fields(string(kernel))
+		if len(fields) >= 3 {
+			info.KernelVersion = fields[2]
+		}
 	}
 
 	// Get uptime

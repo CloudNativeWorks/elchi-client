@@ -1,18 +1,20 @@
 package waf
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/CloudNativeWorks/elchi-client/internal/operations/common"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 	"github.com/sirupsen/logrus"
 )
 
 type Manager struct {
 	downloader  *Downloader
-	permissions *PermissionManager
+	permissions *common.PermissionManager
 	logger      *logrus.Entry
 }
 
@@ -27,67 +29,35 @@ func NewManager() *Manager {
 // GetDownloadedVersions returns list of locally downloaded WAF versions
 func (m *Manager) GetDownloadedVersions() ([]string, error) {
 	m.logger.Info("Getting downloaded WAF versions")
-	
+
 	// Ensure base directory exists
 	if err := m.permissions.EnsureBaseDirectory(); err != nil {
 		return nil, err
 	}
-	
-	var versions []string
-	
-	// Read directory entries
-	entries, err := os.ReadDir(DefaultBaseDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			m.logger.Info("Base directory does not exist, returning empty list")
-			return versions, nil
-		}
-		m.logger.WithError(err).Error("Failed to read WAF directory")
-		return nil, fmt.Errorf("failed to read directory %s: %w", DefaultBaseDir, err)
-	}
-	
-	// Filter and validate version directories
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		
-		name := entry.Name()
-		if !strings.HasPrefix(name, "v") {
-			continue
-		}
-		
-		// Check if WASM binary exists in this version
-		binaryPath := filepath.Join(DefaultBaseDir, name, "coraza.wasm")
-		if _, err := os.Stat(binaryPath); err == nil {
-			versions = append(versions, name)
-		}
-	}
-	
-	m.logger.WithField("count", len(versions)).Info("Found downloaded WAF versions")
-	return versions, nil
+
+	return common.GetDownloadedVersions(DefaultBaseDir, "coraza.wasm", m.logger)
 }
 
 // SetVersion downloads and installs a specific WAF version
-func (m *Manager) SetVersion(version string, forceDownload bool) (string, error) {
+func (m *Manager) SetVersion(ctx context.Context, version string, forceDownload bool) (string, error) {
 	m.logger.WithFields(logrus.Fields{
 		"version": version,
 		"force":   forceDownload,
 	}).Info("Setting WAF version")
-	
+
 	// Ensure base directory exists
 	if err := m.permissions.EnsureBaseDirectory(); err != nil {
 		return "", err
 	}
-	
+
 	// Create version directory
 	versionDir, err := m.permissions.CreateVersionDirectory(version)
 	if err != nil {
 		return "", err
 	}
-	
+
 	binaryPath := filepath.Join(versionDir, "coraza.wasm")
-	
+
 	// Check if binary already exists
 	if !forceDownload {
 		if _, err := os.Stat(binaryPath); err == nil {
@@ -95,37 +65,37 @@ func (m *Manager) SetVersion(version string, forceDownload bool) (string, error)
 			return binaryPath, nil
 		}
 	}
-	
+
 	// Download binary
 	m.logger.WithField("version", version).Info("Downloading WAF WASM binary")
-	if err := m.downloader.DownloadBinary(version, binaryPath); err != nil {
+	if err := m.downloader.DownloadBinary(ctx, version, binaryPath); err != nil {
 		// Clean up on failure
 		os.RemoveAll(versionDir)
 		return "", fmt.Errorf("failed to download WASM binary: %w", err)
 	}
-	
+
 	// Set proper permissions
 	if err := m.permissions.SetBinaryPermissions(binaryPath); err != nil {
 		// Clean up on failure
 		os.RemoveAll(versionDir)
 		return "", fmt.Errorf("failed to set WASM binary permissions: %w", err)
 	}
-	
+
 	m.logger.WithFields(logrus.Fields{
 		"version": version,
 		"path":    binaryPath,
 	}).Info("Successfully installed WAF version")
-	
+
 	return binaryPath, nil
 }
 
 // ProcessWafVersionCommand handles the WAF version command
-func (m *Manager) ProcessWafVersionCommand(request *client.RequestWafVersion) *client.ResponseWafVersion {
+func (m *Manager) ProcessWafVersionCommand(ctx context.Context, request *client.RequestWafVersion) *client.ResponseWafVersion {
 	response := &client.ResponseWafVersion{
-		Status:              client.VersionStatus_SUCCESS,
-		DownloadedVersions:  []string{}, // Initialize as empty slice, not nil
+		Status:             client.VersionStatus_SUCCESS,
+		DownloadedVersions: []string{}, // Initialize as empty slice, not nil
 	}
-	
+
 	switch request.Operation {
 	case client.VersionOperation_GET_VERSIONS:
 		m.logger.Info("Processing GET_VERSIONS request for WAF")
@@ -137,7 +107,7 @@ func (m *Manager) ProcessWafVersionCommand(request *client.RequestWafVersion) *c
 			return response
 		}
 		response.DownloadedVersions = versions
-		
+
 	case client.VersionOperation_SET_VERSION:
 		if request.Version == "" {
 			m.logger.Error("Version not specified for SET_VERSION operation")
@@ -145,12 +115,19 @@ func (m *Manager) ProcessWafVersionCommand(request *client.RequestWafVersion) *c
 			response.ErrorMessage = "version not specified"
 			return response
 		}
-		
+
 		m.logger.WithField("version", request.Version).Info("Processing SET_VERSION request for WAF")
-		binaryPath, err := m.SetVersion(request.Version, request.ForceDownload)
+		binaryPath, err := m.SetVersion(ctx, request.Version, request.ForceDownload)
 		if err != nil {
 			m.logger.WithError(err).Error("Failed to set WAF version")
-			
+
+			// Check for context cancellation first
+			if ctx.Err() != nil {
+				response.Status = client.VersionStatus_DOWNLOAD_FAILED
+				response.ErrorMessage = "operation cancelled"
+				return response
+			}
+
 			// Determine error type
 			if strings.Contains(err.Error(), "not found in archive") {
 				response.Status = client.VersionStatus_VERSION_NOT_FOUND
@@ -166,15 +143,15 @@ func (m *Manager) ProcessWafVersionCommand(request *client.RequestWafVersion) *c
 			response.ErrorMessage = err.Error()
 			return response
 		}
-		
+
 		response.InstalledVersion = request.Version
 		response.DownloadPath = binaryPath
-		
+
 	default:
 		m.logger.WithField("operation", request.Operation).Error("Unknown operation")
 		response.Status = client.VersionStatus_VERSION_NOT_FOUND
 		response.ErrorMessage = "unknown operation"
 	}
-	
+
 	return response
 }

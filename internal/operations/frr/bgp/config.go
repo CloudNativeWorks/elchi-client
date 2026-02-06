@@ -146,27 +146,27 @@ func (cm *ConfigManager) generateConfigCommands(config *client.BgpConfig) ([]str
 	// Graceful Restart Configuration
 	if config.GracefulRestartEnabled {
 		commands = append(commands, "bgp graceful-restart")
-		
+
 		// Graceful restart timer (only set if provided)
 		if config.GracefulRestartTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart restart-time %d", config.GracefulRestartTime))
 		}
-		
+
 		// Stale path time (only set if provided)
 		if config.GracefulStalePathTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart stalepath-time %d", config.GracefulStalePathTime))
 		}
-		
+
 		// Route selection defer time (only set if provided)
 		if config.SelectDeferTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart select-defer-time %d", config.SelectDeferTime))
 		}
-		
+
 		// RIB stale time (only set if provided)
 		if config.RibStaleTime > 0 {
 			commands = append(commands, fmt.Sprintf("bgp graceful-restart rib-stale-time %d", config.RibStaleTime))
 		}
-		
+
 		// Preserve forwarding state
 		if config.PreserveForwardingState {
 			commands = append(commands, "bgp graceful-restart preserve-fw-state")
@@ -239,7 +239,7 @@ func (cm *ConfigManager) generateConfigCommands(config *client.BgpConfig) ([]str
 func (cm *ConfigManager) parseGlobalConfig(config *client.BgpConfig) error {
 	output, err := cm.vtysh.ExecuteCommand("show running-config bgp")
 	if err != nil {
-		return fmt.Errorf("failed to get BGP configuration: %v", err)
+		return fmt.Errorf("failed to get BGP configuration: %w", err)
 	}
 
 	lines := strings.Split(output, "\n")

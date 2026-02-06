@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/upgrade"
@@ -8,7 +9,7 @@ import (
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) UpgradeListenerService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) UpgradeListenerService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	upgradeReq := cmd.GetUpgradeListener()
 	if upgradeReq == nil {
 		s.logger.Errorf("upgrade listener request is nil")
@@ -25,6 +26,7 @@ func (s *Services) UpgradeListenerService(cmd *client.Command) *client.CommandRe
 
 	// Perform upgrade operation
 	result, err := upgrade.UpgradeListener(
+		ctx,
 		serviceName,
 		upgradeReq.GetFromVersion(),
 		upgradeReq.GetToVersion(),

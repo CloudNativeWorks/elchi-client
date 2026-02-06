@@ -1,6 +1,7 @@
 package upgrade
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,9 +23,9 @@ type UpgradeResult struct {
 }
 
 // ValidateServiceExists checks if the service exists
-func ValidateServiceExists(serviceName string, runner *cmdrunner.CommandsRunner) error {
+func ValidateServiceExists(ctx context.Context, serviceName string, runner *cmdrunner.CommandsRunner) error {
 	serviceFile := serviceName + ".service"
-	output, _ := runner.RunWithOutput("systemctl", "show", "-p", "LoadState", serviceFile)
+	output, _ := runner.RunWithOutput(ctx, "systemctl", "show", "-p", "LoadState", serviceFile)
 	if !strings.Contains(string(output), "LoadState=loaded") {
 		return fmt.Errorf("service %s does not exist", serviceFile)
 	}
@@ -88,8 +89,8 @@ func UpdateBootstrapVersion(serviceName, fromVersion, toVersion string, logger *
 }
 
 // ReloadSystemdDaemon reloads systemd daemon
-func ReloadSystemdDaemon(runner *cmdrunner.CommandsRunner, logger *logger.Logger) error {
-	if err := runner.RunWithS("systemctl", "daemon-reload"); err != nil {
+func ReloadSystemdDaemon(ctx context.Context, runner *cmdrunner.CommandsRunner, logger *logger.Logger) error {
+	if err := runner.RunWithS(ctx, "systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("failed to reload systemd daemon: %w", err)
 	}
 	logger.Infof("Reloaded systemd daemon")
@@ -97,7 +98,7 @@ func ReloadSystemdDaemon(runner *cmdrunner.CommandsRunner, logger *logger.Logger
 }
 
 // RestartService restarts the service gracefully or hard restart
-func RestartService(serviceName string, graceful bool, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (string, error) {
+func RestartService(ctx context.Context, serviceName string, graceful bool, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (string, error) {
 	serviceFile := serviceName + ".service"
 
 	var restartStatus string
@@ -106,7 +107,7 @@ func RestartService(serviceName string, graceful bool, logger *logger.Logger, ru
 	if graceful {
 		// Graceful restart - using restart instead of reload because binary changes
 		logger.Infof("Performing graceful restart for service %s", serviceFile)
-		_, err = systemd.ServiceControl(serviceFile, client.SubCommandType_SUB_RESTART, logger, runner)
+		_, err = systemd.ServiceControl(ctx, serviceFile, client.SubCommandType_SUB_RESTART, logger, runner)
 		if err != nil {
 			return "", fmt.Errorf("failed to restart service: %w", err)
 		}
@@ -114,7 +115,7 @@ func RestartService(serviceName string, graceful bool, logger *logger.Logger, ru
 	} else {
 		// Hard restart
 		logger.Infof("Performing hard restart for service %s", serviceFile)
-		_, err = systemd.ServiceControl(serviceFile, client.SubCommandType_SUB_RESTART, logger, runner)
+		_, err = systemd.ServiceControl(ctx, serviceFile, client.SubCommandType_SUB_RESTART, logger, runner)
 		if err != nil {
 			return "", fmt.Errorf("failed to restart service: %w", err)
 		}
@@ -126,17 +127,18 @@ func RestartService(serviceName string, graceful bool, logger *logger.Logger, ru
 }
 
 // VerifyServiceActive verifies that the service is running
-func VerifyServiceActive(serviceName string, runner *cmdrunner.CommandsRunner) error {
+func VerifyServiceActive(ctx context.Context, serviceName string, runner *cmdrunner.CommandsRunner) error {
 	serviceFile := serviceName + ".service"
-	status, err := runner.RunWithOutput("systemctl", "is-active", serviceFile)
+	status, err := runner.RunWithOutput(ctx, "systemctl", "is-active", serviceFile)
 	if err != nil || strings.TrimSpace(string(status)) != "active" {
-		return fmt.Errorf("service is not active after restart: %v", err)
+		return fmt.Errorf("service is not active after restart: %w", err)
 	}
 	return nil
 }
 
 // UpgradeListener performs the complete listener upgrade operation
 func UpgradeListener(
+	ctx context.Context,
 	serviceName string,
 	fromVersion string,
 	toVersion string,
@@ -147,7 +149,7 @@ func UpgradeListener(
 	result := &UpgradeResult{}
 
 	// 1. Validate service exists
-	if err := ValidateServiceExists(serviceName, runner); err != nil {
+	if err := ValidateServiceExists(ctx, serviceName, runner); err != nil {
 		return nil, err
 	}
 
@@ -166,19 +168,19 @@ func UpgradeListener(
 	result.BootstrapFileUpdated = bootstrapPath
 
 	// 4. Reload systemd daemon
-	if err := ReloadSystemdDaemon(runner, logger); err != nil {
+	if err := ReloadSystemdDaemon(ctx, runner, logger); err != nil {
 		return nil, err
 	}
 
 	// 5. Restart service
-	restartStatus, err := RestartService(serviceName, graceful, logger, runner)
+	restartStatus, err := RestartService(ctx, serviceName, graceful, logger, runner)
 	if err != nil {
 		return nil, err
 	}
 	result.RestartStatus = restartStatus
 
 	// 6. Verify service is active
-	if err := VerifyServiceActive(serviceName, runner); err != nil {
+	if err := VerifyServiceActive(ctx, serviceName, runner); err != nil {
 		return nil, err
 	}
 	result.ServiceActive = true

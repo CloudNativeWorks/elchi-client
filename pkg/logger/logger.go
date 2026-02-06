@@ -39,7 +39,7 @@ type Config struct {
 func Init(config Config) error {
 	level, err := logrus.ParseLevel(config.Level)
 	if err != nil {
-		return fmt.Errorf("invalid log level: %v", err)
+		return fmt.Errorf("invalid log level: %w", err)
 	}
 
 	logger := logrus.New()

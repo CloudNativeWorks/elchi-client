@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+
+	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 )
 
-func readAllLines(path string, n uint32) ([]string, error) {
+func readAllLines(path string, n uint32, log *logger.Logger) ([]string, error) {
 	const readBlockSize = 8192
 	const maxLineBufferSize = 1024 * 1024 // 1MB limit to prevent infinite buffer growth
 
@@ -35,7 +37,7 @@ func readAllLines(path string, n uint32) ([]string, error) {
 	for offset > 0 && uint32(len(lines)) < n {
 		iterationCount++
 		if iterationCount > maxIterations {
-			fmt.Printf("WARNING: Exceeded max iterations (%d), breaking\n", maxIterations)
+			log.Warnf("Exceeded max iterations (%d), breaking", maxIterations)
 			break
 		}
 
@@ -47,7 +49,7 @@ func readAllLines(path string, n uint32) ([]string, error) {
 
 		// If file was rotated/truncated, break
 		if currentFi.Size() != fi.Size() {
-			fmt.Printf("WARNING: File size changed during read (rotation?), was %d, now %d bytes\n",
+			log.Warnf("File size changed during read (rotation?), was %d, now %d bytes",
 				fi.Size(), currentFi.Size())
 			break
 		}
@@ -68,7 +70,7 @@ func readAllLines(path string, n uint32) ([]string, error) {
 
 		// Safety check: if buffer grows too large, break to prevent infinite loop
 		if len(lineBuffer) > maxLineBufferSize {
-			fmt.Printf("WARNING: lineBuffer exceeded %d bytes, breaking to prevent infinite loop\n", maxLineBufferSize)
+			log.Warnf("lineBuffer exceeded %d bytes, breaking to prevent infinite loop", maxLineBufferSize)
 			break
 		}
 
@@ -85,7 +87,7 @@ func readAllLines(path string, n uint32) ([]string, error) {
 
 		// Check for scanner errors
 		if err := scanner.Err(); err != nil {
-			fmt.Printf("WARNING: Scanner error: %v, breaking\n", err)
+			log.Warnf("Scanner error: %v, breaking", err)
 			break
 		}
 
@@ -94,7 +96,7 @@ func readAllLines(path string, n uint32) ([]string, error) {
 			// No new lines found despite reading more data - likely a very long line
 			// Keep the partial data and continue, but don't infinite loop
 			if len(lineBuffer) > readBlockSize*2 {
-				fmt.Printf("WARNING: No new lines found, buffer size: %d bytes, breaking\n", len(lineBuffer))
+				log.Warnf("No new lines found, buffer size: %d bytes, breaking", len(lineBuffer))
 				break
 			}
 		}

@@ -68,13 +68,13 @@ func GetNetworkState(cmd *client.Command, logger *logger.Logger) *client.Command
 	// Build network state
 	logger.Debug("Building complete network state response")
 	networkState := &client.NetworkState{
-		Interfaces:       interfaces,
-		Routes:           routes,
-		Policies:         policies,
-		RoutingTables:    routingTables,
+		Interfaces:         interfaces,
+		Routes:             routes,
+		Policies:           policies,
+		RoutingTables:      routingTables,
 		CurrentNetplanYaml: currentYaml,
 	}
-	logger.Debugf("Network state built successfully with %d interfaces, %d routes, %d policies, %d tables", 
+	logger.Debugf("Network state built successfully with %d interfaces, %d routes, %d policies, %d tables",
 		len(interfaces), len(routes), len(policies), len(routingTables))
 
 	// Return the network state in the response
@@ -97,7 +97,7 @@ func GetNetworkState(cmd *client.Command, logger *logger.Logger) *client.Command
 func getCurrentInterfaceStates() ([]*client.InterfaceState, error) {
 	links, err := netlink.LinkList()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list links: %v", err)
+		return nil, fmt.Errorf("failed to list links: %w", err)
 	}
 
 	var interfaces []*client.InterfaceState
@@ -143,7 +143,7 @@ func getCurrentInterfaceStates() ([]*client.InterfaceState, error) {
 // getCurrentRoutes returns current routes from all routing tables
 func getCurrentRoutes() ([]*client.Route, error) {
 	var clientRoutes []*client.Route
-	
+
 	// Get all routing tables first
 	tableManager := NewTableManager(logger.NewLogger("network"))
 	tables, err := tableManager.GetCurrentTables()
@@ -156,14 +156,14 @@ func getCurrentRoutes() ([]*client.Route, error) {
 			{Id: 144, Name: "sadasd"},
 		}
 	}
-	
+
 	// Query each table separately
 	for _, table := range tables {
 		// Skip reserved tables that don't contain user routes
 		if table.Id == 255 || table.Id == 0 {
 			continue
 		}
-		
+
 		routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: int(table.Id)}, netlink.RT_FILTER_TABLE)
 		if err != nil {
 			continue // Skip tables that can't be queried
@@ -267,11 +267,11 @@ func getRouteProtocolName(protocol int) string {
 	case 19:
 		return "babel"
 	case 186:
-		return "bgp"      // Common BGP protocol ID
+		return "bgp" // Common BGP protocol ID
 	case 188:
-		return "ospf"     // Common OSPF protocol ID
+		return "ospf" // Common OSPF protocol ID
 	case 189:
-		return "isis"     // Common ISIS protocol ID
+		return "isis" // Common ISIS protocol ID
 	default:
 		return fmt.Sprintf("unknown-%d", protocol)
 	}

@@ -29,21 +29,21 @@ func detectLogType(line string) LogType {
 	if logLineRegex.MatchString(line) {
 		return LogTypeSystem
 	}
-	
+
 	// Access logs can be in two formats:
 	// 1. Classic format: [timestamp] "GET /path HTTP/1.1" status ...
-	if strings.HasPrefix(line, "[") && (strings.Contains(line, `"GET `) || 
-	   strings.Contains(line, `"POST `) || strings.Contains(line, `"PUT `) || 
-	   strings.Contains(line, `"DELETE `) || strings.Contains(line, `"HEAD `) || 
-	   strings.Contains(line, `"OPTIONS `) || strings.Contains(line, `"PATCH `)) {
+	if strings.HasPrefix(line, "[") && (strings.Contains(line, `"GET `) ||
+		strings.Contains(line, `"POST `) || strings.Contains(line, `"PUT `) ||
+		strings.Contains(line, `"DELETE `) || strings.Contains(line, `"HEAD `) ||
+		strings.Contains(line, `"OPTIONS `) || strings.Contains(line, `"PATCH `)) {
 		return LogTypeAccess
 	}
-	
+
 	// 2. JSON format: {"...":"..."}
 	if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
 		return LogTypeAccess
 	}
-	
+
 	return LogTypeUnknown
 }
 
@@ -63,32 +63,32 @@ func parseSystemLogLine(line string) (timestamp, pid, level, component, source, 
 // splitAccessLogs splits multi-line access log entries by timestamp patterns
 func splitAccessLogs(message string) []string {
 	var entries []string
-	
+
 	// Pattern to match access log timestamp: [2025-09-22T15:31:55.540Z]
 	accessTimestampPattern := regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\]`)
-	
+
 	// Pattern to match system log embedded in access logs: [timestamp][pid][level][component]
 	systemLogPattern := regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\]\[\d+\]\[[^\]]+\]\[[^\]]+\]`)
-	
+
 	// Find all access log timestamp positions
 	accessMatches := accessTimestampPattern.FindAllStringIndex(message, -1)
-	
+
 	if len(accessMatches) == 0 {
 		// No access log timestamps found
 		return []string{message}
 	}
-	
+
 	if len(accessMatches) == 1 {
 		// Single access log, but check for embedded system logs
 		systemMatches := systemLogPattern.FindAllStringIndex(message, -1)
 		if len(systemMatches) == 0 {
 			return []string{message}
 		}
-		
+
 		// Split by system log boundaries
 		var parts []string
 		lastEnd := 0
-		
+
 		for _, sysMatch := range systemMatches {
 			// Add access log part before system log
 			if sysMatch[0] > lastEnd {
@@ -99,7 +99,7 @@ func splitAccessLogs(message string) []string {
 			}
 			lastEnd = sysMatch[1]
 		}
-		
+
 		// Add remaining part after last system log
 		if lastEnd < len(message) {
 			part := strings.TrimSpace(message[lastEnd:])
@@ -107,13 +107,13 @@ func splitAccessLogs(message string) []string {
 				parts = append(parts, part)
 			}
 		}
-		
+
 		if len(parts) > 0 {
 			return parts
 		}
 		return []string{message}
 	}
-	
+
 	// Multiple access log timestamps
 	for i, match := range accessMatches {
 		start := match[0]
@@ -123,7 +123,7 @@ func splitAccessLogs(message string) []string {
 		} else {
 			end = len(message)
 		}
-		
+
 		entry := strings.TrimSpace(message[start:end])
 		if entry != "" {
 			// Check if this entry contains embedded system logs
@@ -152,12 +152,16 @@ func splitAccessLogs(message string) []string {
 			}
 		}
 	}
-	
+
 	return entries
 }
 
 // GetLastNGeneralLogsFromSystemd reads logs from standard systemd journal for FRR and other services
 func GetLastNGeneralLogsFromSystemd(serviceName string, count uint32) ([]*client.GeneralLogs, error) {
+	if count > 10000 {
+		count = 10000
+	}
+
 	// Open standard systemd journal (not namespace-specific)
 	j, err := sdjournal.NewJournal()
 	if err != nil {

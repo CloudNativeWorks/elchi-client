@@ -48,8 +48,6 @@ func (sm *StateManager) GetBgpState() (*client.Ipv4UnicastSummary, error) {
 	return summary, nil
 }
 
-
-
 // ResetBgpSession resets a BGP session
 func (sm *StateManager) ResetBgpSession(neighborIP string) error {
 	sm.logger.Info(fmt.Sprintf("Resetting BGP session for neighbor %s", neighborIP))
@@ -68,7 +66,7 @@ func (sm *StateManager) ClearBgpRoutes(clearBgp *client.ClearBgp) error {
 		return sm.errorHandler.NewValidationError("clear_bgp", nil, "ClearBgp configuration cannot be nil")
 	}
 
-	sm.logger.Info(fmt.Sprintf("Clearing BGP routes: soft=%v, direction=%s, neighbor=%s", 
+	sm.logger.Info(fmt.Sprintf("Clearing BGP routes: soft=%v, direction=%s, neighbor=%s",
 		clearBgp.Soft, clearBgp.Direction, clearBgp.Neighbor))
 
 	// Build clear command
@@ -82,7 +80,7 @@ func (sm *StateManager) ClearBgpRoutes(clearBgp *client.ClearBgp) error {
 		} else {
 			// Validate IP address format for specific neighbor
 			if !sm.isValidIP(clearBgp.Neighbor) {
-				return sm.errorHandler.NewValidationError("neighbor_ip", clearBgp.Neighbor, 
+				return sm.errorHandler.NewValidationError("neighbor_ip", clearBgp.Neighbor,
 					fmt.Sprintf("Invalid neighbor IP address: %s", clearBgp.Neighbor))
 			}
 			cmd += fmt.Sprintf(" %s", clearBgp.Neighbor)
@@ -102,7 +100,7 @@ func (sm *StateManager) ClearBgpRoutes(clearBgp *client.ClearBgp) error {
 		case "out":
 			cmd += " out"
 		default:
-			return sm.errorHandler.NewValidationError("direction", clearBgp.Direction, 
+			return sm.errorHandler.NewValidationError("direction", clearBgp.Direction,
 				fmt.Sprintf("Invalid direction: %s (must be 'all', 'in', or 'out')", clearBgp.Direction))
 		}
 	}
@@ -261,7 +259,7 @@ func (sm *StateManager) ParseBgpNeighbors() (*client.ShowBgpNeighbors, error) {
 
 	var neighborsData map[string]any
 	if err := json.Unmarshal([]byte(output), &neighborsData); err != nil {
-		return nil, fmt.Errorf("failed to parse BGP neighbors JSON: %v", err)
+		return nil, fmt.Errorf("failed to parse BGP neighbors JSON: %w", err)
 	}
 
 	response := &client.ShowBgpNeighbors{
@@ -585,13 +583,13 @@ func (sm *StateManager) parseReceivedRoutes() (*client.ReceivedRoutes, error) {
 
 	output, err := sm.vtysh.ExecuteCommand("show bgp ipv4 unicast json")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get BGP routes: %v", err)
+		return nil, fmt.Errorf("failed to get BGP routes: %w", err)
 	}
 
 	// Parse JSON response
 	var jsonData map[string]any
 	if err := json.Unmarshal([]byte(output), &jsonData); err != nil {
-		return nil, fmt.Errorf("failed to parse BGP routes JSON: %v", err)
+		return nil, fmt.Errorf("failed to parse BGP routes JSON: %w", err)
 	}
 
 	receivedRoutes := &client.ReceivedRoutes{
@@ -647,7 +645,7 @@ func (sm *StateManager) parseAdvertisedRoutes() ([]*client.AdvertisedRoutes, err
 	neighbors, err := sm.getNeighborIPs()
 	if err != nil {
 		sm.logger.Error(fmt.Sprintf("Failed to get neighbors: %v", err))
-		return nil, fmt.Errorf("failed to get neighbors: %v", err)
+		return nil, fmt.Errorf("failed to get neighbors: %w", err)
 	}
 
 	sm.logger.Info(fmt.Sprintf("Found %d neighbors to process: %v", len(neighbors), neighbors))
@@ -763,7 +761,7 @@ func (sm *StateManager) parseAdvertisedRouteForNeighbor(neighborIP, output strin
 	if err := json.Unmarshal([]byte(output), &jsonData); err != nil {
 		sm.logger.Error(fmt.Sprintf("Failed to parse JSON for neighbor %s: %v", neighborIP, err))
 		sm.logger.Debug(fmt.Sprintf("Raw JSON: %s", output))
-		return nil, fmt.Errorf("failed to parse advertised routes JSON: %v", err)
+		return nil, fmt.Errorf("failed to parse advertised routes JSON: %w", err)
 	}
 
 	sm.logger.Debug(fmt.Sprintf("JSON keys for neighbor %s: %v", neighborIP, getMapKeys(jsonData)))
@@ -905,14 +903,14 @@ func (sm *StateManager) getNeighborIPsFromSummary() ([]string, error) {
 
 	output, err := sm.vtysh.ExecuteCommand("show bgp summary json")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get BGP summary: %v", err)
+		return nil, fmt.Errorf("failed to get BGP summary: %w", err)
 	}
 
 	sm.logger.Debug(fmt.Sprintf("Raw summary JSON: %s", output))
 
 	var jsonData map[string]any
 	if err := json.Unmarshal([]byte(output), &jsonData); err != nil {
-		return nil, fmt.Errorf("failed to parse BGP summary JSON: %v", err)
+		return nil, fmt.Errorf("failed to parse BGP summary JSON: %w", err)
 	}
 
 	var neighborIPs []string
@@ -974,7 +972,7 @@ func (sm *StateManager) getNeighborIPsManual() ([]string, error) {
 
 	output, err := sm.vtysh.ExecuteCommand("show bgp summary")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get BGP summary text: %v", err)
+		return nil, fmt.Errorf("failed to get BGP summary text: %w", err)
 	}
 
 	sm.logger.Debug(fmt.Sprintf("Raw summary text: %s", output))

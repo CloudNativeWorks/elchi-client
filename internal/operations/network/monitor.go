@@ -65,7 +65,7 @@ func (cm *ConnectionMonitor) MonitorConnectionDuringApply(ctx context.Context) b
 		case <-ctx.Done():
 			// Timeout reached - check if we had enough successful checks
 			result := failedChecks < MaxFailedChecks && successfulChecks > 0
-			cm.logger.Debugf("Context timeout reached - failed:%d, successful:%d, max_failed:%d", 
+			cm.logger.Debugf("Context timeout reached - failed:%d, successful:%d, max_failed:%d",
 				failedChecks, successfulChecks, MaxFailedChecks)
 			if result {
 				cm.logger.Info("Connection monitoring completed successfully")
@@ -80,7 +80,7 @@ func (cm *ConnectionMonitor) MonitorConnectionDuringApply(ctx context.Context) b
 				failedChecks = 0 // Reset failed count
 				successfulChecks++
 				cm.logger.Debugf("Connection check successful (count: %d)", successfulChecks)
-				
+
 				// After 2 successful checks in a row, we can be confident
 				if successfulChecks >= 2 {
 					cm.logger.Info("Connection monitoring completed successfully (early success)")
@@ -90,7 +90,7 @@ func (cm *ConnectionMonitor) MonitorConnectionDuringApply(ctx context.Context) b
 				failedChecks++
 				successfulChecks = 0 // Reset successful count
 				cm.logger.Warnf("Connection check failed (attempt %d/%d)", failedChecks, MaxFailedChecks)
-				
+
 				if failedChecks >= MaxFailedChecks {
 					cm.logger.Error("Maximum failed connection checks reached")
 					return false
@@ -155,7 +155,7 @@ func (cm *ConnectionMonitor) tcpCheck() bool {
 	// Try common controller ports
 	ports := []string{"443", "50051", "8080", "9090"}
 	cm.logger.Debugf("Testing TCP connectivity to %s on ports: %v", cm.controllerIP, ports)
-	
+
 	for _, port := range ports {
 		address := cm.controllerIP + ":" + port
 		cm.logger.Debugf("Trying TCP connection to %s", address)
@@ -167,7 +167,7 @@ func (cm *ConnectionMonitor) tcpCheck() bool {
 		}
 		cm.logger.Debugf("TCP connection failed to %s: %v", address, err)
 	}
-	
+
 	return false
 }
 
@@ -217,7 +217,7 @@ func (cm *ConnectionMonitor) getControllerFromEnv() string {
 	// Common environment variable patterns
 	envVars := []string{
 		"ELCHI_SERVER_HOST",
-		"CONTROLLER_HOST", 
+		"CONTROLLER_HOST",
 		"GRPC_SERVER_HOST",
 	}
 	cm.logger.Debugf("Checking environment variables: %v", envVars)
@@ -255,10 +255,10 @@ func (cm *ConnectionMonitor) getControllerFromNetstat() string {
 	lines := strings.Split(string(output), "\n")
 	cm.logger.Debugf("Processing %d netstat lines", len(lines))
 	for _, line := range lines {
-		if strings.Contains(line, "ESTABLISHED") && 
-		   (strings.Contains(line, ":443") || strings.Contains(line, ":50051")) {
+		if strings.Contains(line, "ESTABLISHED") &&
+			(strings.Contains(line, ":443") || strings.Contains(line, ":50051")) {
 			cm.logger.Debugf("Found established gRPC connection: %s", line)
-			
+
 			fields := strings.Fields(line)
 			if len(fields) >= 5 {
 				// Parse foreign address (controller)

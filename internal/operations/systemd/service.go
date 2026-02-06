@@ -2,6 +2,7 @@ package systemd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -74,14 +75,14 @@ func parseServiceStatus(output string) (*client.ServiceStatus, error) {
 	return status, nil
 }
 
-func GetServiceStatus(serviceName string, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
+func GetServiceStatus(ctx context.Context, serviceName string, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
 	if !strings.HasSuffix(serviceName, ".service") {
 		serviceName = serviceName + ".service"
 	}
 
 	// Use RunWithOutputSNoErrLog because systemctl status returns non-zero exit codes
 	// for inactive/failed services, which is expected behavior
-	output, err := runner.RunWithOutputSNoErrLog("systemctl", "status", serviceName)
+	output, err := runner.RunWithOutputSNoErrLog(ctx, "systemctl", "status", serviceName)
 	if err != nil {
 		// Even if command failed, we can still parse the output
 		if !strings.Contains(string(output), "could not be found") {
@@ -101,7 +102,7 @@ func GetServiceStatus(serviceName string, logger *logger.Logger, runner *cmdrunn
 	return status, nil
 }
 
-func ServiceControl(serviceName string, action client.SubCommandType, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
+func ServiceControl(ctx context.Context, serviceName string, action client.SubCommandType, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
 	if !strings.HasSuffix(serviceName, ".service") {
 		serviceName = serviceName + ".service"
 	}
@@ -113,15 +114,15 @@ func ServiceControl(serviceName string, action client.SubCommandType, logger *lo
 	var cmd *exec.Cmd
 	switch action {
 	case client.SubCommandType_SUB_START:
-		cmd = runner.SetCommandWithS("systemctl", "start", serviceName)
+		cmd = runner.SetCommandWithS(ctx, "systemctl", "start", serviceName)
 	case client.SubCommandType_SUB_STOP:
-		cmd = runner.SetCommandWithS("systemctl", "stop", serviceName)
+		cmd = runner.SetCommandWithS(ctx, "systemctl", "stop", serviceName)
 	case client.SubCommandType_SUB_RESTART:
-		cmd = runner.SetCommandWithS("systemctl", "restart", serviceName)
+		cmd = runner.SetCommandWithS(ctx, "systemctl", "restart", serviceName)
 	case client.SubCommandType_SUB_RELOAD:
-		cmd = runner.SetCommandWithS("systemctl", "reload", serviceName)
+		cmd = runner.SetCommandWithS(ctx, "systemctl", "reload", serviceName)
 	case client.SubCommandType_SUB_STATUS:
-		return GetServiceStatus(serviceName, logger, runner)
+		return GetServiceStatus(ctx, serviceName, logger, runner)
 	default:
 		return nil, fmt.Errorf("unsupported service action: %s", action)
 	}
@@ -133,7 +134,7 @@ func ServiceControl(serviceName string, action client.SubCommandType, logger *lo
 
 	logger.Debugf("Successfully performed %s on service %s", action, serviceName)
 
-	status, err := GetServiceStatus(serviceName, logger, runner)
+	status, err := GetServiceStatus(ctx, serviceName, logger, runner)
 	if err != nil {
 		logger.Warnf("Service action successful but failed to get status: %v", err)
 		return nil, nil

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -11,7 +12,7 @@ import (
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) UndeployService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) UndeployService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	undeployReq := cmd.GetUndeploy()
 	if undeployReq == nil {
 		s.logger.Errorf("undeploy payload is nil")
@@ -32,7 +33,11 @@ func (s *Services) UndeployService(cmd *client.Command) *client.CommandResponse 
 
 	// Check if service exists before trying to stop/disable
 	serviceExists := false
-	if output, _ := s.runner.RunWithOutputS("systemctl", "list-units", "--all", serviceName); strings.Contains(string(output), serviceName) {
+	output, err := s.runner.RunWithOutputS(ctx, "systemctl", "list-units", "--all", serviceName)
+	if err != nil {
+		s.logger.Debugf("failed to list service units: %v", err)
+	}
+	if strings.Contains(string(output), serviceName) {
 		serviceExists = true
 	}
 
@@ -41,11 +46,11 @@ func (s *Services) UndeployService(cmd *client.Command) *client.CommandResponse 
 			"service_name": serviceName,
 		}).Debug("Stopping and disabling service")
 
-		if err := s.runner.RunWithS("systemctl", "stop", serviceName); err != nil {
+		if err := s.runner.RunWithS(ctx, "systemctl", "stop", serviceName); err != nil {
 			s.logger.Warnf("Failed to stop service %s: %v", serviceName, err)
 		}
 
-		if err := s.runner.RunWithS("systemctl", "disable", serviceName); err != nil {
+		if err := s.runner.RunWithS(ctx, "systemctl", "disable", serviceName); err != nil {
 			s.logger.Warnf("Failed to disable service %s: %v", serviceName, err)
 		}
 	} else {
@@ -78,7 +83,7 @@ func (s *Services) UndeployService(cmd *client.Command) *client.CommandResponse 
 
 	// Only reload systemd if service files were deleted or service existed
 	if serviceExists || len(filesResult.DeletedFiles) > 0 {
-		if err := s.runner.RunWithS("systemctl", "daemon-reload"); err != nil {
+		if err := s.runner.RunWithS(ctx, "systemctl", "daemon-reload"); err != nil {
 			s.logger.Warnf("Failed to reload systemd daemon: %v", err)
 			cleanupErrors = append(cleanupErrors, fmt.Sprintf("systemd reload: %v", err))
 		}

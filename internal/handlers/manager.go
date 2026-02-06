@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 
 	elchigrpc "github.com/CloudNativeWorks/elchi-client/internal/grpc"
@@ -52,11 +53,11 @@ func (r *CommandRegistry) GetHandler(cmdType client.CommandType) (CommandHandler
 	return handler, exists
 }
 
-func (m *CommandManager) HandleCommand(cmd *client.Command) *client.CommandResponse {
+func (m *CommandManager) HandleCommand(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	handler, exists := m.registry.GetHandler(cmd.Type)
 	if !exists {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("unsupported command type: %v", cmd.Type))
 	}
 
-	return handler.Handle(cmd)
+	return handler.Handle(ctx, cmd)
 }

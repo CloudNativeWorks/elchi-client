@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	ElchiTableFile = "/var/lib/elchi/rt_tables.conf"                // Elchi storage location
-	KernelTableLink = "/etc/iproute2/rt_tables.d/elchi.conf"       // Kernel reads from here
-	MinTableID      = 100  // Elchi-managed tables start from 100
-	MaxTableID      = 999  // Elchi-managed tables end at 999
+	ElchiTableFile  = "/var/lib/elchi/rt_tables.conf"        // Elchi storage location
+	KernelTableLink = "/etc/iproute2/rt_tables.d/elchi.conf" // Kernel reads from here
+	MinTableID      = 100                                    // Elchi-managed tables start from 100
+	MaxTableID      = 999                                    // Elchi-managed tables end at 999
 )
 
 type TableManager struct {
@@ -52,7 +52,7 @@ func (tm *TableManager) ManageRoutingTables(tables []*client.RoutingTableDefinit
 
 	// Write tables to rt_tables.d/elchi.conf
 	if err := tm.writeTableDefinitions(elchiTables); err != nil {
-		return fmt.Errorf("failed to write table definitions: %v", err)
+		return fmt.Errorf("failed to write table definitions: %w", err)
 	}
 
 	tm.logger.Infof("Successfully processed %d routing table definitions", len(elchiTables))
@@ -67,15 +67,15 @@ func (tm *TableManager) ManageTableOperations(operations []*client.TableOperatio
 		switch op.Action {
 		case client.TableOperation_ADD:
 			if err := tm.addTable(op.Table); err != nil {
-				return fmt.Errorf("failed to add table: %v", err)
+				return fmt.Errorf("failed to add table: %w", err)
 			}
 		case client.TableOperation_DELETE:
 			if err := tm.deleteTable(op.Table); err != nil {
-				return fmt.Errorf("failed to delete table: %v", err)
+				return fmt.Errorf("failed to delete table: %w", err)
 			}
 		case client.TableOperation_REPLACE:
 			if err := tm.replaceTable(op.Table); err != nil {
-				return fmt.Errorf("failed to replace table: %v", err)
+				return fmt.Errorf("failed to replace table: %w", err)
 			}
 		}
 	}
@@ -110,7 +110,7 @@ func (tm *TableManager) writeTableDefinitions(tables []*client.RoutingTableDefin
 	// Ensure directory exists
 	dir := filepath.Dir(tm.tablePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create tables directory: %v", err)
+		return fmt.Errorf("failed to create tables directory: %w", err)
 	}
 
 	// Build file content
@@ -129,7 +129,7 @@ func (tm *TableManager) writeTableDefinitions(tables []*client.RoutingTableDefin
 
 	// Write to file
 	if err := os.WriteFile(tm.tablePath, []byte(content.String()), 0644); err != nil {
-		return fmt.Errorf("failed to write table file: %v", err)
+		return fmt.Errorf("failed to write table file: %w", err)
 	}
 
 	// Create symbolic link for kernel access, or fallback to dual write
@@ -191,10 +191,10 @@ func isValidTableName(name string) bool {
 	}
 
 	for _, r := range name {
-		if !(r >= 'a' && r <= 'z') && 
-		   !(r >= 'A' && r <= 'Z') && 
-		   !(r >= '0' && r <= '9') && 
-		   r != '_' && r != '-' {
+		if !(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') &&
+			r != '_' && r != '-' {
 			return false
 		}
 	}
@@ -222,7 +222,7 @@ func (tm *TableManager) addTable(table *client.RoutingTableDefinition) error {
 	// Read existing tables
 	existingTables, err := tm.readTableDefinitions()
 	if err != nil {
-		return fmt.Errorf("failed to read existing tables: %v", err)
+		return fmt.Errorf("failed to read existing tables: %w", err)
 	}
 
 	// Check if table already exists
@@ -240,7 +240,7 @@ func (tm *TableManager) addTable(table *client.RoutingTableDefinition) error {
 
 	// Write updated tables
 	if err := tm.writeTableDefinitions(existingTables); err != nil {
-		return fmt.Errorf("failed to write updated tables: %v", err)
+		return fmt.Errorf("failed to write updated tables: %w", err)
 	}
 
 	tm.logger.Infof("Successfully added table %d (%s)", table.Id, table.Name)
@@ -258,7 +258,7 @@ func (tm *TableManager) deleteTable(table *client.RoutingTableDefinition) error 
 	// Read existing tables
 	existingTables, err := tm.readTableDefinitions()
 	if err != nil {
-		return fmt.Errorf("failed to read existing tables: %v", err)
+		return fmt.Errorf("failed to read existing tables: %w", err)
 	}
 
 	// Filter out the table to delete
@@ -281,7 +281,7 @@ func (tm *TableManager) deleteTable(table *client.RoutingTableDefinition) error 
 	if len(updatedTables) == 0 {
 		// Remove the file if no tables left
 		if err := os.Remove(tm.tablePath); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove empty table file: %v", err)
+			return fmt.Errorf("failed to remove empty table file: %w", err)
 		}
 		// Remove symbolic link too
 		os.Remove(KernelTableLink)
@@ -289,7 +289,7 @@ func (tm *TableManager) deleteTable(table *client.RoutingTableDefinition) error 
 	} else {
 		// Write remaining tables
 		if err := tm.writeTableDefinitions(updatedTables); err != nil {
-			return fmt.Errorf("failed to write updated tables: %v", err)
+			return fmt.Errorf("failed to write updated tables: %w", err)
 		}
 	}
 
@@ -318,7 +318,7 @@ func (tm *TableManager) replaceTable(table *client.RoutingTableDefinition) error
 	// Read existing tables
 	existingTables, err := tm.readTableDefinitions()
 	if err != nil {
-		return fmt.Errorf("failed to read existing tables: %v", err)
+		return fmt.Errorf("failed to read existing tables: %w", err)
 	}
 
 	// Replace the table with matching ID
@@ -339,7 +339,7 @@ func (tm *TableManager) replaceTable(table *client.RoutingTableDefinition) error
 
 	// Write updated tables
 	if err := tm.writeTableDefinitions(existingTables); err != nil {
-		return fmt.Errorf("failed to write updated tables: %v", err)
+		return fmt.Errorf("failed to write updated tables: %w", err)
 	}
 
 	tm.logger.Infof("Successfully replaced table %d (%s)", table.Id, table.Name)
@@ -353,7 +353,7 @@ func (tm *TableManager) createKernelLink() error {
 
 	// Create symbolic link from kernel location to our storage location
 	if err := os.Symlink(tm.tablePath, KernelTableLink); err != nil {
-		return fmt.Errorf("failed to create symbolic link: %v", err)
+		return fmt.Errorf("failed to create symbolic link: %w", err)
 	}
 
 	tm.logger.Debugf("Created symbolic link: %s -> %s", KernelTableLink, tm.tablePath)
@@ -384,7 +384,7 @@ func TableManage(cmd *client.Command, logger *logger.Logger) *client.CommandResp
 	}
 
 	manager := NewTableManager(logger)
-	
+
 	if err := manager.ManageTableOperations(networkReq.GetTableOperations()); err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("table management failed: %v", err))
 	}
@@ -400,7 +400,7 @@ func TableManage(cmd *client.Command, logger *logger.Logger) *client.CommandResp
 // TableList handles SUB_TABLE_LIST command
 func TableList(cmd *client.Command, logger *logger.Logger) *client.CommandResponse {
 	manager := NewTableManager(logger)
-	
+
 	tables, err := manager.GetCurrentTables()
 	if err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to list tables: %v", err))

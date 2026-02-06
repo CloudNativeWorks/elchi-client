@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,20 +36,24 @@ type DeployState struct {
 	SystemdReloaded   bool // daemon-reload was performed
 }
 
-func cleanupAndRollback(state DeployState, logger *logger.Logger, runner *cmdrunner.CommandsRunner) {
+func cleanupAndRollback(ctx context.Context, state DeployState, logger *logger.Logger, runner *cmdrunner.CommandsRunner) {
 	logger.Infof("Starting rollback for deployment")
 
 	// Stop and disable service if it was started or enabled
 	if state.ServiceStarted || state.ServiceEnabled {
 		// Check if service actually exists before trying to stop/disable (use 'show' which doesn't require sudo)
-		if output, _ := runner.RunWithOutput("systemctl", "show", "-p", "LoadState", state.ServiceName); strings.Contains(string(output), "LoadState=loaded") {
+		output, err := runner.RunWithOutput(ctx, "systemctl", "show", "-p", "LoadState", state.ServiceName)
+		if err != nil {
+			logger.Debugf("failed to check service state during rollback: %v", err)
+		}
+		if strings.Contains(string(output), "LoadState=loaded") {
 			if state.ServiceStarted {
-				if err := runner.RunWithS("systemctl", "stop", state.ServiceName); err != nil {
+				if err := runner.RunWithS(ctx, "systemctl", "stop", state.ServiceName); err != nil {
 					logger.Errorf("failed to stop service %s: %v", state.ServiceName, err)
 				}
 			}
 			if state.ServiceEnabled {
-				if err := runner.RunWithS("systemctl", "disable", state.ServiceName); err != nil {
+				if err := runner.RunWithS(ctx, "systemctl", "disable", state.ServiceName); err != nil {
 					logger.Errorf("failed to disable service %s: %v", state.ServiceName, err)
 				}
 			}
@@ -71,7 +76,7 @@ func cleanupAndRollback(state DeployState, logger *logger.Logger, runner *cmdrun
 
 	// Reload systemd only if we created service files or modified systemd state
 	if state.SystemdReloaded || state.ServiceEnabled || len(state.CreatedFiles) > 0 {
-		if err := runner.RunWithS("systemctl", "daemon-reload"); err != nil {
+		if err := runner.RunWithS(ctx, "systemctl", "daemon-reload"); err != nil {
 			logger.Errorf("failed to reload systemd during rollback: %v", err)
 		}
 	}
@@ -80,7 +85,19 @@ func cleanupAndRollback(state DeployState, logger *logger.Logger, runner *cmdrun
 }
 
 // validateDeploymentPrerequisites checks if deployment can proceed
-func validateDeploymentPrerequisites(deployReq *client.RequestDeploy, _ *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+func validateDeploymentPrerequisites(ctx context.Context, deployReq *client.RequestDeploy, log *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+	// Validate service name (alphanumeric, hyphen, underscore only)
+	name := deployReq.GetName()
+	if name == "" {
+		return fmt.Errorf("service name is empty")
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') && r != '-' && r != '_' {
+			return fmt.Errorf("invalid service name '%s': must contain only letters, numbers, hyphen, underscore", name)
+		}
+	}
+
 	// Check if port is already in use by another deployment
 	activeDeploymentsMu.RLock()
 	if existingService, exists := activeDeployments[deployReq.GetPort()]; exists {
@@ -98,9 +115,17 @@ func validateDeploymentPrerequisites(deployReq *client.RequestDeploy, _ *logger.
 	// Check if service already exists
 	serviceName := fmt.Sprintf("%s-%d.service", deployReq.GetName(), deployReq.GetPort())
 	// Use 'systemctl show' which doesn't require sudo
-	if output, _ := runner.RunWithOutput("systemctl", "show", "-p", "LoadState", serviceName); strings.Contains(string(output), "LoadState=loaded") {
+	output, err := runner.RunWithOutput(ctx, "systemctl", "show", "-p", "LoadState", serviceName)
+	if err != nil {
+		log.Debugf("failed to check service load state: %v", err)
+	}
+	if strings.Contains(string(output), "LoadState=loaded") {
 		// Check if it's actually active (doesn't require sudo)
-		if status, _ := runner.RunWithOutput("systemctl", "is-active", serviceName); strings.TrimSpace(string(status)) == "active" {
+		status, err := runner.RunWithOutput(ctx, "systemctl", "is-active", serviceName)
+		if err != nil {
+			log.Debugf("failed to check service active state: %v", err)
+		}
+		if strings.TrimSpace(string(status)) == "active" {
 			return fmt.Errorf("service %s is already active", serviceName)
 		}
 	}
@@ -114,7 +139,7 @@ func checkIfInterfaceCreated(ifaceName string) bool {
 	return err == nil
 }
 
-func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) DeployService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	deployReq := cmd.GetDeploy()
 	if deployReq == nil {
 		s.logger.Errorf("deploy payload is nil")
@@ -126,7 +151,7 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 	defer deploymentLock.Unlock()
 
 	// Check if deployment already exists and needs update
-	checkResult, err := CheckExistingDeployment(deployReq, s.logger, s.runner)
+	checkResult, err := CheckExistingDeployment(ctx, deployReq, s.logger, s.runner)
 	if err != nil {
 		s.logger.Warnf("Failed to check existing deployment: %v, proceeding with full deployment", err)
 	}
@@ -141,29 +166,17 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 		activeDeployments[deployReq.GetPort()] = filename
 		activeDeploymentsMu.Unlock()
 
-		return &client.CommandResponse{
-			Identity:  cmd.Identity,
-			CommandId: cmd.CommandId,
-			Success:   true,
-			Result: &client.CommandResponse_Deploy{
-				Deploy: &client.ResponseDeploy{
-					Files:             filepath.Join(models.ElchiLibPath, "bootstraps", filename+".yaml"),
-					Service:           filepath.Join(models.SystemdPath, filename+".service"),
-					Network:           filepath.Join(models.NetplanPath, fmt.Sprintf("90-elchi-if-%d.yaml", deployReq.GetPort())),
-					DownstreamAddress: deployReq.GetDownstreamAddress(),
-					Port:              deployReq.GetPort(),
-					InterfaceId:       deployReq.GetInterfaceId(),
-					IpMode:            deployReq.GetIpMode(),
-					Version:           deployReq.GetVersion(),
-				},
-			},
-		}
+		return buildDeploySuccessResponse(cmd, deployReq,
+			filepath.Join(models.ElchiLibPath, "bootstraps", filename+".yaml"),
+			filepath.Join(models.SystemdPath, filename+".service"),
+			filepath.Join(models.NetplanPath, fmt.Sprintf("90-elchi-if-%d.yaml", deployReq.GetPort())),
+		)
 	}
 
 	// If deployment exists but needs update, apply only changes
 	if checkResult != nil && checkResult.Exists && checkResult.NeedsUpdate {
 		s.logger.Infof("Updating existing deployment %s-%d", deployReq.GetName(), deployReq.GetPort())
-		if err := ApplyDeploymentUpdates(deployReq, checkResult, s.logger, s.runner); err != nil {
+		if err := ApplyDeploymentUpdates(ctx, deployReq, checkResult, s.logger, s.runner); err != nil {
 			s.logger.Errorf("Failed to apply deployment updates: %v", err)
 			return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to apply deployment updates: %v", err))
 		}
@@ -176,27 +189,15 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 		activeDeploymentsMu.Unlock()
 
 		s.logger.Infof("Successfully updated deployment %s on port %d", deployReq.Name, deployReq.GetPort())
-		return &client.CommandResponse{
-			Identity:  cmd.Identity,
-			CommandId: cmd.CommandId,
-			Success:   true,
-			Result: &client.CommandResponse_Deploy{
-				Deploy: &client.ResponseDeploy{
-					Files:             filepath.Join(models.ElchiLibPath, "bootstraps", filename+".yaml"),
-					Service:           filepath.Join(models.SystemdPath, filename+".service"),
-					Network:           filepath.Join(models.NetplanPath, fmt.Sprintf("90-elchi-if-%d.yaml", deployReq.GetPort())),
-					DownstreamAddress: deployReq.GetDownstreamAddress(),
-					Port:              deployReq.GetPort(),
-					InterfaceId:       deployReq.GetInterfaceId(),
-					IpMode:            deployReq.GetIpMode(),
-					Version:           deployReq.GetVersion(),
-				},
-			},
-		}
+		return buildDeploySuccessResponse(cmd, deployReq,
+			filepath.Join(models.ElchiLibPath, "bootstraps", filename+".yaml"),
+			filepath.Join(models.SystemdPath, filename+".service"),
+			filepath.Join(models.NetplanPath, fmt.Sprintf("90-elchi-if-%d.yaml", deployReq.GetPort())),
+		)
 	}
 
 	// Fresh deployment - validate prerequisites
-	if err := validateDeploymentPrerequisites(deployReq, s.logger, s.runner); err != nil {
+	if err := validateDeploymentPrerequisites(ctx, deployReq, s.logger, s.runner); err != nil {
 		s.logger.Errorf("deployment validation failed: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("deployment validation failed: %v", err))
 	}
@@ -234,7 +235,7 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 
 	bootstrapPath, err := files.WriteBootstrapFile(filename, deployReq.GetBootstrap())
 	if err != nil {
-		cleanupAndRollback(state, s.logger, s.runner)
+		cleanupAndRollback(ctx, state, s.logger, s.runner)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to write bootstrap file: %v", err))
 	}
 	state.CreatedFiles = append(state.CreatedFiles, bootstrapPath)
@@ -246,7 +247,7 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 			state.DummyIfaceCreated = true
 			state.DummyIfaceName = ifaceName
 		}
-		cleanupAndRollback(state, s.logger, s.runner)
+		cleanupAndRollback(ctx, state, s.logger, s.runner)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to setup network interface: %v", err))
 	}
 	state.CreatedFiles = append(state.CreatedFiles, netplanPath)
@@ -255,42 +256,46 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 
 	servicePath, err := files.WriteSystemdServiceFile(filename, deployReq.GetName(), deployReq.GetVersion(), deployReq.GetPort())
 	if err != nil {
-		cleanupAndRollback(state, s.logger, s.runner)
+		cleanupAndRollback(ctx, state, s.logger, s.runner)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to write service file: %v", err))
 	}
 	state.CreatedFiles = append(state.CreatedFiles, servicePath)
 
 	// Reload systemd to recognize new service file
-	if err := s.runner.RunWithS("systemctl", "daemon-reload"); err != nil {
-		cleanupAndRollback(state, s.logger, s.runner)
+	if err := s.runner.RunWithS(ctx, "systemctl", "daemon-reload"); err != nil {
+		cleanupAndRollback(ctx, state, s.logger, s.runner)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to reload systemd (check sudo permissions): %v", err))
 	}
 	state.SystemdReloaded = true
 
 	// Enable the service
-	if err := s.runner.RunWithS("systemctl", "enable", state.ServiceName); err != nil {
+	if err := s.runner.RunWithS(ctx, "systemctl", "enable", state.ServiceName); err != nil {
 		s.logger.Errorf("Failed to enable service %s - checking sudo permissions", state.ServiceName)
-		cleanupAndRollback(state, s.logger, s.runner)
+		cleanupAndRollback(ctx, state, s.logger, s.runner)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to enable service (check sudo permissions for 'systemctl enable'): %v", err))
 	}
 	state.ServiceEnabled = true
 
 	// Start the service
-	if err := s.runner.RunWithS("systemctl", "start", state.ServiceName); err != nil {
-		cleanupAndRollback(state, s.logger, s.runner)
+	if err := s.runner.RunWithS(ctx, "systemctl", "start", state.ServiceName); err != nil {
+		cleanupAndRollback(ctx, state, s.logger, s.runner)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to start service (check sudo permissions): %v", err))
 	}
 	state.ServiceStarted = true
 
 	// Verify service is actually running (doesn't require sudo)
-	if status, err := s.runner.RunWithOutput("systemctl", "is-active", state.ServiceName); err != nil || strings.TrimSpace(string(status)) != "active" {
+	if status, err := s.runner.RunWithOutput(ctx, "systemctl", "is-active", state.ServiceName); err != nil || strings.TrimSpace(string(status)) != "active" {
 		s.logger.Errorf("Service %s failed to start properly", state.ServiceName)
-		cleanupAndRollback(state, s.logger, s.runner)
+		cleanupAndRollback(ctx, state, s.logger, s.runner)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("service failed to start properly: %v", err))
 	}
 
 	s.logger.Infof("Successfully deployed service %s on port %d", deployReq.Name, deployReq.GetPort())
 
+	return buildDeploySuccessResponse(cmd, deployReq, bootstrapPath, servicePath, netplanPath)
+}
+
+func buildDeploySuccessResponse(cmd *client.Command, deployReq *client.RequestDeploy, bootstrapPath, servicePath, networkPath string) *client.CommandResponse {
 	return &client.CommandResponse{
 		Identity:  cmd.Identity,
 		CommandId: cmd.CommandId,
@@ -299,7 +304,7 @@ func (s *Services) DeployService(cmd *client.Command) *client.CommandResponse {
 			Deploy: &client.ResponseDeploy{
 				Files:             bootstrapPath,
 				Service:           servicePath,
-				Network:           netplanPath,
+				Network:           networkPath,
 				DownstreamAddress: deployReq.GetDownstreamAddress(),
 				Port:              deployReq.GetPort(),
 				InterfaceId:       deployReq.GetInterfaceId(),

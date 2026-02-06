@@ -152,9 +152,12 @@ func (c *Client) connectInternal(ctx context.Context, startMonitor bool) error {
 	}
 
 	// Connection not ready, clean up and return error
+	c.mu.Lock()
 	if c.conn != nil {
 		c.conn.Close()
+		c.conn = nil
 	}
+	c.mu.Unlock()
 	return fmt.Errorf("connection not ready")
 }
 
@@ -225,15 +228,15 @@ func (c *Client) createConnection(address string, params *connectionParams) erro
 
 	if err != nil {
 		c.logger.WithFields(logger.Fields{
-			"error":            err.Error(),
-			"address":          address,
-			"tls":              c.config.Server.TLS,
-			"server_host":      c.config.Server.Host,
-			"server_port":      c.config.Server.Port,
-			"connect_timeout":  params.connectTimeout.String(),
-			"keepalive_time":   params.keepaliveTime.String(),
+			"error":           err.Error(),
+			"address":         address,
+			"tls":             c.config.Server.TLS,
+			"server_host":     c.config.Server.Host,
+			"server_port":     c.config.Server.Port,
+			"connect_timeout": params.connectTimeout.String(),
+			"keepalive_time":  params.keepaliveTime.String(),
 		}).Error("failed to create gRPC connection - check TLS/ALPN configuration")
-		return fmt.Errorf("connection error: %v", err)
+		return fmt.Errorf("connection error: %w", err)
 	}
 
 	// Wait for connection to be ready
@@ -275,18 +278,20 @@ func (c *Client) createConnection(address string, params *connectionParams) erro
 		return fmt.Errorf("connection not ready, current state: %s - likely TLS/ALPN issue", finalState.String())
 	}
 
+	c.mu.Lock()
 	c.conn = conn
-	
+	c.mu.Unlock()
+
 	// Get connection info for detailed logging
 	connState := conn.GetState()
 	c.logger.WithFields(logger.Fields{
-		"address":           address,
+		"address":          address,
 		"state":            "READY",
 		"connection_state": connState.String(),
 		"tls_enabled":      c.config.Server.TLS,
 		"target":           conn.Target(),
 	}).Info("GRPC connection established successfully")
-	
+
 	return nil
 }
 
@@ -296,7 +301,7 @@ func (c *Client) getTransportCredentials() grpc.DialOption {
 		// Use TLS credentials without verification (insecure skip verify)
 		creds := credentials.NewTLS(&tls.Config{
 			ServerName:         c.config.Server.Host,
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: c.config.Server.InsecureSkipVerify,
 		})
 		c.logger.Debug("Using TLS for transport")
 		return grpc.WithTransportCredentials(creds)
@@ -349,6 +354,7 @@ func (c *Client) startMonitor(parentCtx context.Context) {
 	c.monitorCtx, c.monitorCancel = context.WithCancel(parentCtx)
 	c.monitorRunning = true
 	c.monitorWg.Add(1)
+	monitorCtx := c.monitorCtx // capture under lock for goroutine safety
 	c.mu.Unlock()
 
 	go func() {
@@ -358,7 +364,7 @@ func (c *Client) startMonitor(parentCtx context.Context) {
 			c.mu.Unlock()
 			c.monitorWg.Done()
 		}()
-		c.monitorConnection(c.monitorCtx)
+		c.monitorConnection(monitorCtx)
 	}()
 }
 
@@ -378,7 +384,11 @@ func (c *Client) monitorConnection(ctx context.Context) {
 			c.logger.Info("connection monitoring cancelled")
 			return
 		case <-ticker.C:
-			if c.conn == nil {
+			c.mu.Lock()
+			conn := c.conn
+			c.mu.Unlock()
+
+			if conn == nil {
 				c.logger.Error("connection lost")
 				if err := c.reconnect(ctx, &retryCount); err != nil {
 					if retryCount >= maxRetries {
@@ -389,7 +399,7 @@ func (c *Client) monitorConnection(ctx context.Context) {
 				continue
 			}
 
-			state := c.conn.GetState()
+			state := conn.GetState()
 			switch state {
 			case connectivity.TransientFailure, connectivity.Shutdown:
 				c.logger.WithFields(logger.Fields{
@@ -422,10 +432,12 @@ func (c *Client) reconnect(ctx context.Context, retryCount *int) error {
 	}).Info("attempting reconnection")
 
 	// Close existing connection if any
+	c.mu.Lock()
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
 	}
+	c.mu.Unlock()
 
 	time.Sleep(backoff)
 
@@ -494,7 +506,7 @@ func (c *Client) Close() error {
 
 	c.logger.Info("closing connection")
 	if err := c.conn.Close(); err != nil {
-		return fmt.Errorf("failed to close connection: %v", err)
+		return fmt.Errorf("failed to close connection: %w", err)
 	}
 
 	c.conn = nil
@@ -504,6 +516,8 @@ func (c *Client) Close() error {
 
 // GetConnection returns the GRPC connection
 func (c *Client) GetConnection() *grpc.ClientConn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.conn
 }
 

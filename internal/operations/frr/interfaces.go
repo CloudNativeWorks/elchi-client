@@ -13,4 +13,4 @@ type VtyshManagerInterface interface {
 	ParseConfigSection(section string) (map[string][]string, error)
 	ValidateVtyshAvailable() error
 	WaitForProtocolReady(protocol string, timeout time.Duration) error
-} 
+}

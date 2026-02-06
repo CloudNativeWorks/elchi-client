@@ -5,13 +5,18 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	"github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func GetLastNGeneralLogs(identifier string, count uint32) ([]*client.GeneralLogs, error) {
+func GetLastNGeneralLogs(identifier string, count uint32, log *logger.Logger) ([]*client.GeneralLogs, error) {
+	if count > 10000 {
+		count = 10000
+	}
+
 	logPath := "/var/log/" + identifier + ".log"
 
-	lines, err := readLastNLinesFromRotatedLogs(logPath, count)
+	lines, err := readLastNLinesFromRotatedLogs(logPath, count, log)
 	if err != nil {
 		return nil, fmt.Errorf("log file not found: %w", err)
 	}
@@ -62,9 +67,7 @@ func GetLastNGeneralLogs(identifier string, count uint32) ([]*client.GeneralLogs
 	return logs, nil
 }
 
-func readLastNLinesFromRotatedLogs(basePath string, n uint32) ([]string, error) {
+func readLastNLinesFromRotatedLogs(basePath string, n uint32, log *logger.Logger) ([]string, error) {
 	// Only read the main log file (no rotated or compressed files)
-	return readAllLines(basePath, n)
+	return readAllLines(basePath, n, log)
 }
-
-

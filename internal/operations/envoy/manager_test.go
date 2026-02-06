@@ -1,6 +1,7 @@
 package envoy
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +38,7 @@ func TestProcessEnvoyVersionCommand_GetVersions(t *testing.T) {
 		Operation: client.VersionOperation_GET_VERSIONS,
 	}
 
-	response := manager.ProcessEnvoyVersionCommand(request)
+	response := manager.ProcessEnvoyVersionCommand(context.Background(), request)
 
 	if response == nil {
 		t.Fatal("Response should not be nil")
@@ -49,7 +50,7 @@ func TestProcessEnvoyVersionCommand_GetVersions(t *testing.T) {
 
 	// Downloaded versions should be a slice (even if empty)
 	t.Logf("DownloadedVersions: %+v (len: %d, nil: %v)", response.DownloadedVersions, len(response.DownloadedVersions), response.DownloadedVersions == nil)
-	
+
 	// Should be empty since no versions are downloaded
 	if len(response.DownloadedVersions) != 0 {
 		t.Errorf("Expected 0 downloaded versions, got %d", len(response.DownloadedVersions))
@@ -64,7 +65,7 @@ func TestProcessEnvoyVersionCommand_SetVersion_EmptyVersion(t *testing.T) {
 		Version:   "", // Empty version should fail
 	}
 
-	response := manager.ProcessEnvoyVersionCommand(request)
+	response := manager.ProcessEnvoyVersionCommand(context.Background(), request)
 
 	if response == nil {
 		t.Fatal("Response should not be nil")

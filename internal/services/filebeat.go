@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -10,20 +11,20 @@ import (
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) FilebeatService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) FilebeatService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	switch cmd.SubType {
 	case client.SubCommandType_UPDATE_FILEBEAT_CONFIG:
-		return s.UpdateFilebeatConfig(cmd)
+		return s.UpdateFilebeatConfig(ctx, cmd)
 	case client.SubCommandType_GET_FILEBEAT_CONFIG:
-		return s.GetFilebeatConfig(cmd)
+		return s.GetFilebeatConfig(ctx, cmd)
 	case client.SubCommandType_GET_FILEBEAT_STATUS:
-		return s.GetFilebeatStatus(cmd)
+		return s.GetFilebeatStatus(ctx, cmd)
 	case client.SubCommandType_SUB_START:
-		return s.FilebeatServiceAction(cmd, "start")
+		return s.FilebeatServiceAction(ctx, cmd, "start")
 	case client.SubCommandType_SUB_STOP:
-		return s.FilebeatServiceAction(cmd, "stop")
+		return s.FilebeatServiceAction(ctx, cmd, "stop")
 	case client.SubCommandType_SUB_RESTART:
-		return s.FilebeatServiceAction(cmd, "restart")
+		return s.FilebeatServiceAction(ctx, cmd, "restart")
 	case client.SubCommandType_SUB_LOGS:
 		return s.FilebeatServiceLogs(cmd)
 	}
@@ -31,26 +32,29 @@ func (s *Services) FilebeatService(cmd *client.Command) *client.CommandResponse 
 	return helper.NewErrorResponse(cmd, "invalid sub command")
 }
 
-func (s *Services) UpdateFilebeatConfig(cmd *client.Command) *client.CommandResponse {
+func (s *Services) UpdateFilebeatConfig(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	filebeatReq := cmd.GetFilebeat()
 	if filebeatReq == nil {
 		return helper.NewErrorResponse(cmd, "filebeat request is nil")
 	}
 
 	// Update configuration
-	if err := filebeat.UpdateConfig(filebeatReq, s.logger, s.runner); err != nil {
+	if err := filebeat.UpdateConfig(ctx, filebeatReq, s.logger, s.runner); err != nil {
 		s.logger.Errorf("failed to update filebeat config: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to update config: %v", err))
 	}
 
 	// Restart service to apply changes
-	if err := filebeat.RestartService(s.logger, s.runner); err != nil {
+	if err := filebeat.RestartService(ctx, s.logger, s.runner); err != nil {
 		s.logger.Errorf("failed to restart filebeat: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("config updated but failed to restart service: %v", err))
 	}
 
 	// Get current status
-	status, _ := filebeat.GetServiceStatus(s.logger, s.runner)
+	status, err := filebeat.GetServiceStatus(ctx, s.logger, s.runner)
+	if err != nil {
+		s.logger.Debugf("failed to get filebeat service status: %v", err)
+	}
 	statusMsg := "unknown"
 	if status != nil {
 		statusMsg = status.Active
@@ -71,14 +75,17 @@ func (s *Services) UpdateFilebeatConfig(cmd *client.Command) *client.CommandResp
 	}
 }
 
-func (s *Services) GetFilebeatConfig(cmd *client.Command) *client.CommandResponse {
+func (s *Services) GetFilebeatConfig(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	config, err := filebeat.GetCurrentConfig(s.logger)
 	if err != nil {
 		s.logger.Errorf("failed to get filebeat config: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to get config: %v", err))
 	}
 
-	status, _ := filebeat.GetServiceStatus(s.logger, s.runner)
+	status, statusErr := filebeat.GetServiceStatus(ctx, s.logger, s.runner)
+	if statusErr != nil {
+		s.logger.Debugf("failed to get filebeat service status: %v", statusErr)
+	}
 	statusMsg := "unknown"
 	if status != nil {
 		statusMsg = status.Active
@@ -99,8 +106,8 @@ func (s *Services) GetFilebeatConfig(cmd *client.Command) *client.CommandRespons
 	}
 }
 
-func (s *Services) GetFilebeatStatus(cmd *client.Command) *client.CommandResponse {
-	status, err := filebeat.GetServiceStatus(s.logger, s.runner)
+func (s *Services) GetFilebeatStatus(ctx context.Context, cmd *client.Command) *client.CommandResponse {
+	status, err := filebeat.GetServiceStatus(ctx, s.logger, s.runner)
 	if err != nil {
 		s.logger.Errorf("failed to get filebeat status: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to get status: %v", err))
@@ -131,7 +138,7 @@ func (s *Services) GetFilebeatStatus(cmd *client.Command) *client.CommandRespons
 	}
 }
 
-func (s *Services) FilebeatServiceAction(cmd *client.Command, action string) *client.CommandResponse {
+func (s *Services) FilebeatServiceAction(ctx context.Context, cmd *client.Command, action string) *client.CommandResponse {
 	var subType client.SubCommandType
 
 	switch action {
@@ -146,7 +153,7 @@ func (s *Services) FilebeatServiceAction(cmd *client.Command, action string) *cl
 	}
 
 	// Use systemd.ServiceControl for consistency
-	status, err := filebeat.ServiceControl("filebeat", subType, s.logger, s.runner)
+	status, err := filebeat.ServiceControl(ctx, "filebeat", subType, s.logger, s.runner)
 	if err != nil {
 		s.logger.Errorf("failed to %s filebeat: %v", action, err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to %s filebeat: %v", action, err))

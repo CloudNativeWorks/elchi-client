@@ -39,6 +39,7 @@ server:
   host: "backend.elchi.io"
   port: 443
   tls: true
+  insecure_skip_verify: true # Set to false when using trusted TLS certificates
   token: "your-authentication-token"
   timeout: "30s"
 

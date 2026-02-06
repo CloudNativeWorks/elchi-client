@@ -34,15 +34,15 @@ func (rm *RouteManagerNew) ManageRoutes(operations []*client.RouteOperation) err
 		switch op.Action {
 		case client.RouteOperation_ADD:
 			if err := rm.addRoute(op.Route); err != nil {
-				return fmt.Errorf("failed to add route: %v", err)
+				return fmt.Errorf("failed to add route: %w", err)
 			}
 		case client.RouteOperation_DELETE:
 			if err := rm.deleteRoute(op.Route); err != nil {
-				return fmt.Errorf("failed to delete route: %v", err)
+				return fmt.Errorf("failed to delete route: %w", err)
 			}
 		case client.RouteOperation_REPLACE:
 			if err := rm.replaceRoute(op.Route); err != nil {
-				return fmt.Errorf("failed to replace route: %v", err)
+				return fmt.Errorf("failed to replace route: %w", err)
 			}
 		}
 	}
@@ -59,8 +59,8 @@ func (rm *RouteManagerNew) addRoute(route *client.Route) error {
 		rm.logger.Debugf("Route conversion failed: %v", err)
 		return err
 	}
-	
-	rm.logger.Debugf("Converted route - Table:%d, LinkIndex:%d, Dst:%v, Gw:%v, Priority:%d", 
+
+	rm.logger.Debugf("Converted route - Table:%d, LinkIndex:%d, Dst:%v, Gw:%v, Priority:%d",
 		netlinkRoute.Table, netlinkRoute.LinkIndex, netlinkRoute.Dst, netlinkRoute.Gw, netlinkRoute.Priority)
 
 	if err := netlink.RouteAdd(netlinkRoute); err != nil {
@@ -69,7 +69,7 @@ func (rm *RouteManagerNew) addRoute(route *client.Route) error {
 			return nil
 		}
 		rm.logger.Debugf("netlink.RouteAdd failed: %v", err)
-		return fmt.Errorf("failed to add route: %v", err)
+		return fmt.Errorf("failed to add route: %w", err)
 	}
 
 	rm.logger.Debugf("Route successfully added to netlink")
@@ -101,13 +101,13 @@ func (rm *RouteManagerNew) deleteRoute(route *client.Route) error {
 		rm.logger.Debugf("Route conversion for delete failed: %v", err)
 		return err
 	}
-	
-	rm.logger.Debugf("Deleting netlink route - Table:%d, LinkIndex:%d, Dst:%v, Gw:%v", 
+
+	rm.logger.Debugf("Deleting netlink route - Table:%d, LinkIndex:%d, Dst:%v, Gw:%v",
 		netlinkRoute.Table, netlinkRoute.LinkIndex, netlinkRoute.Dst, netlinkRoute.Gw)
 
 	if err := netlink.RouteDel(netlinkRoute); err != nil {
 		rm.logger.Debugf("netlink.RouteDel failed: %v", err)
-		return fmt.Errorf("failed to delete route: %v", err)
+		return fmt.Errorf("failed to delete route: %w", err)
 	}
 
 	rm.logger.Debugf("Route successfully deleted from netlink")
@@ -140,7 +140,7 @@ func (rm *RouteManagerNew) replaceRoute(route *client.Route) error {
 	}
 
 	if err := netlink.RouteReplace(netlinkRoute); err != nil {
-		return fmt.Errorf("failed to replace route: %v", err)
+		return fmt.Errorf("failed to replace route: %w", err)
 	}
 
 	return nil
@@ -153,7 +153,7 @@ func (rm *RouteManagerNew) clientRouteToNetlink(route *client.Route) (*netlink.R
 	// Parse destination
 	if route.To != "" && route.To != "0.0.0.0/0" {
 		if _, dst, err := net.ParseCIDR(route.To); err != nil {
-			return nil, fmt.Errorf("invalid destination %s: %v", route.To, err)
+			return nil, fmt.Errorf("invalid destination %s: %w", route.To, err)
 		} else {
 			netlinkRoute.Dst = dst
 		}
@@ -181,7 +181,7 @@ func (rm *RouteManagerNew) clientRouteToNetlink(route *client.Route) (*netlink.R
 	if route.Interface != "" {
 		link, err := netlink.LinkByName(route.Interface)
 		if err != nil {
-			return nil, fmt.Errorf("interface %s not found: %v", route.Interface, err)
+			return nil, fmt.Errorf("interface %s not found: %w", route.Interface, err)
 		}
 		netlinkRoute.LinkIndex = link.Attrs().Index
 	}
@@ -230,7 +230,7 @@ func RouteManage(cmd *client.Command, logger *logger.Logger) *client.CommandResp
 	}
 
 	manager := NewRouteManagerNew(logger)
-	
+
 	if err := manager.ManageRoutes(networkReq.GetRouteOperations()); err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("route management failed: %v", err))
 	}
@@ -282,7 +282,7 @@ func (rm *RouteManagerNew) validateRouteDeletion(route *client.Route) error {
 	// Check for protected protocols
 	protectedProtocols := map[string]string{
 		"bgp":      "BGP routes are dynamically managed and should not be manually deleted",
-		"ospf":     "OSPF routes are dynamically managed and should not be manually deleted", 
+		"ospf":     "OSPF routes are dynamically managed and should not be manually deleted",
 		"isis":     "ISIS routes are dynamically managed and should not be manually deleted",
 		"zebra":    "FRR/Zebra routes are dynamically managed and should not be manually deleted",
 		"bird":     "BIRD routes are dynamically managed and should not be manually deleted",
@@ -306,9 +306,9 @@ type NetplanRouteConfig struct {
 }
 
 type NetplanRouteNetwork struct {
-	Version   int                                `yaml:"version"`
-	Renderer  string                             `yaml:"renderer"`
-	Ethernets map[string]NetplanRouteInterface  `yaml:"ethernets,omitempty"`
+	Version   int                              `yaml:"version"`
+	Renderer  string                           `yaml:"renderer"`
+	Ethernets map[string]NetplanRouteInterface `yaml:"ethernets,omitempty"`
 }
 
 type NetplanRouteInterface struct {
@@ -336,7 +336,7 @@ func (rm *RouteManagerNew) addRouteToPersistentConfig(route *client.Route) error
 	config := &NetplanRouteConfig{
 		Network: NetplanRouteNetwork{
 			Version:   2,
-			Renderer:  "networkd", 
+			Renderer:  "networkd",
 			Ethernets: make(map[string]NetplanRouteInterface),
 		},
 	}
@@ -389,17 +389,17 @@ func (rm *RouteManagerNew) addRouteToPersistentConfig(route *client.Route) error
 	// Write back to file
 	data, err := yaml.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal route config: %v", err)
+		return fmt.Errorf("failed to marshal route config: %w", err)
 	}
 
 	// Use tee with sudo to write file directly as root (bypass ownership issues)
 	cmd := exec.Command("sudo", "tee", routeFile)
 	cmd.Stdin = strings.NewReader(string(data))
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to write route config via sudo tee: %v", err)
+		return fmt.Errorf("failed to write route config via sudo tee: %w", err)
 	}
 
-	// Set proper permissions  
+	// Set proper permissions
 	chmodCmd := exec.Command("sudo", "chmod", "0600", routeFile)
 	if err := chmodCmd.Run(); err != nil {
 		rm.logger.Warnf("Failed to set permissions for %s: %v", routeFile, err)
@@ -431,7 +431,7 @@ func (rm *RouteManagerNew) removeRouteFromPersistentConfig(route *client.Route) 
 		return nil // File doesn't exist, nothing to remove
 	} else {
 		if err := yaml.Unmarshal(data, config); err != nil {
-			return fmt.Errorf("failed to parse existing route config: %v", err)
+			return fmt.Errorf("failed to parse existing route config: %w", err)
 		}
 	}
 
@@ -449,16 +449,16 @@ func (rm *RouteManagerNew) removeRouteFromPersistentConfig(route *client.Route) 
 			filteredRoutes = append(filteredRoutes, existingRoute)
 			continue
 		}
-		
+
 		// Match optional fields (table, metric, onlink) - only if specified
 		tableMatch := (route.Table == 0) || (existingRoute.Table == int(route.Table))
 		metricMatch := (route.Metric == 0) || (existingRoute.Metric == int(route.Metric))
 		onlinkMatch := existingRoute.Onlink == route.Onlink
-		
+
 		if tableMatch && metricMatch && onlinkMatch {
 			continue // Skip this route (remove it)
 		}
-		
+
 		filteredRoutes = append(filteredRoutes, existingRoute)
 	}
 
@@ -468,11 +468,11 @@ func (rm *RouteManagerNew) removeRouteFromPersistentConfig(route *client.Route) 
 	if len(filteredRoutes) == 0 {
 		// Remove interface config if no routes left
 		delete(config.Network.Ethernets, route.Interface)
-		
+
 		// If no interfaces left, remove the entire file
 		if len(config.Network.Ethernets) == 0 {
 			if err := os.Remove(routeFile); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("failed to remove empty route config: %v", err)
+				return fmt.Errorf("failed to remove empty route config: %w", err)
 			}
 			rm.logger.Infof("Removed empty route config file %s", routeFile)
 			return nil
@@ -485,17 +485,17 @@ func (rm *RouteManagerNew) removeRouteFromPersistentConfig(route *client.Route) 
 	// Write back to file
 	data, err := yaml.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal route config: %v", err)
+		return fmt.Errorf("failed to marshal route config: %w", err)
 	}
 
 	// Use tee with sudo to write file directly as root
 	cmd := exec.Command("sudo", "tee", routeFile)
 	cmd.Stdin = strings.NewReader(string(data))
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to write route config via sudo tee: %v", err)
+		return fmt.Errorf("failed to write route config via sudo tee: %w", err)
 	}
 
-	// Set proper permissions  
+	// Set proper permissions
 	chmodCmd := exec.Command("sudo", "chmod", "0600", routeFile)
 	if err := chmodCmd.Run(); err != nil {
 		rm.logger.Warnf("Failed to set permissions for %s: %v", routeFile, err)

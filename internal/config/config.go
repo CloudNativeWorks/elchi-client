@@ -25,11 +25,12 @@ type Config struct {
 
 // ServerConfig holds GRPC server configuration
 type ServerConfig struct {
-	Host         string `mapstructure:"host"`
-	Port         int    `mapstructure:"port"`
-	Token        string `mapstructure:"token"`
-	TLS          bool   `mapstructure:"tls"`
-	Timeout      string `mapstructure:"timeout"`
+	Host               string `mapstructure:"host"`
+	Port               int    `mapstructure:"port"`
+	Token              string `mapstructure:"token"`
+	TLS                bool   `mapstructure:"tls"`
+	InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
+	Timeout            string `mapstructure:"timeout"`
 }
 
 // LoggingConfig holds logging configuration
@@ -41,7 +42,7 @@ type LoggingConfig struct {
 // ClientConfig holds client-specific configuration
 type ClientConfig struct {
 	Name  string `mapstructure:"name"`
-	BGP   *bool  `mapstructure:"bgp"`   // Pointer to detect if explicitly set
+	BGP   *bool  `mapstructure:"bgp"` // Pointer to detect if explicitly set
 	Cloud string `mapstructure:"cloud"`
 }
 
@@ -55,7 +56,7 @@ func GetStoredClientID() (string, error) {
 	newID := uuid.New().String()
 	err := os.WriteFile(idPath, []byte(newID), 0600)
 	if err != nil {
-		return "", fmt.Errorf("failed to save client ID: %v", err)
+		return "", fmt.Errorf("failed to save client ID: %w", err)
 	}
 
 	return newID, nil
@@ -128,9 +129,9 @@ func LoadConfig(path string) (*Config, error) {
 // initLogger initializes the logger with the provided configuration
 func initLogger(cfg *LoggingConfig) error {
 	logConfig := logger.Config{
-		Level:      cfg.Level,
-		Format:     cfg.Format,
-		Module:     "main",
+		Level:  cfg.Level,
+		Format: cfg.Format,
+		Module: "main",
 	}
 
 	return logger.Init(logConfig)
@@ -140,9 +141,9 @@ func initLogger(cfg *LoggingConfig) error {
 func DefaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host:         "localhost",
-			Port:         50051,
-			Timeout:      "30s",
+			Host:    "localhost",
+			Port:    50051,
+			Timeout: "30s",
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

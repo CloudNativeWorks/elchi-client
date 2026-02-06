@@ -1,12 +1,14 @@
 package files
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/CloudNativeWorks/elchi-client/pkg/models"
 	"github.com/CloudNativeWorks/elchi-client/pkg/template"
@@ -39,7 +41,10 @@ func WriteDummyNetplanFile(ifaceName, downstreamAddress string, port uint32) (st
 	networkContent := fmt.Sprintf(template.DummyNetPlan, ifaceName, ipv4CIDR)
 	networkPath := filepath.Join(models.NetplanPath, fmt.Sprintf("90-%s.yaml", ifaceName))
 
-	cmd := exec.Command("sudo", "tee", networkPath)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sudo", "tee", networkPath)
 	cmd.Stdin = strings.NewReader(networkContent)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -47,7 +52,7 @@ func WriteDummyNetplanFile(ifaceName, downstreamAddress string, port uint32) (st
 	}
 
 	// Set correct permissions
-	if err := exec.Command("sudo", "chmod", "0600", networkPath).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "sudo", "chmod", "0600", networkPath).Run(); err != nil {
 		return "", fmt.Errorf("failed to set file permissions: %w", err)
 	}
 
@@ -57,14 +62,14 @@ func WriteDummyNetplanFile(ifaceName, downstreamAddress string, port uint32) (st
 func WriteSystemdServiceFile(filename, name, version string, port uint32) (string, error) {
 	path := filepath.Join(models.SystemdPath, filename+".service")
 	content := fmt.Sprintf(template.SystemdTemplate,
-		name,      // Description (%s)
-		version,   // ExecStartPre envoy path (%s)
-		filename,  // ExecStartPre bootstrap (%s)
-		version,   // ExecStart envoy path (%s)
-		filename,  // ExecStart bootstrap (%s)
-		port,      // base-id (%d)
-		filename,  // log-path (%s)
-		filename,  // SyslogIdentifier (%s)
+		name,     // Description (%s)
+		version,  // ExecStartPre envoy path (%s)
+		filename, // ExecStartPre bootstrap (%s)
+		version,  // ExecStart envoy path (%s)
+		filename, // ExecStart bootstrap (%s)
+		port,     // base-id (%d)
+		filename, // log-path (%s)
+		filename, // SyslogIdentifier (%s)
 	)
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("failed to write systemd service file: %w", err)

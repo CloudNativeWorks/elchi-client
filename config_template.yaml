@@ -2,6 +2,7 @@ server:
   host: "" # Main server address
   port: 80 # Main server port
   tls: false # Set to true if you are using TLS on main server
+  insecure_skip_verify: true # Set to false when using trusted/valid TLS certificates
   token: "xxxx-xxxx-xxxx-xxxx" # Get from Elchi
   timeout: "30s"
 

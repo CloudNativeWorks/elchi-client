@@ -12,7 +12,7 @@ import (
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) ProxyEnvoyAdmin(cmd *client.Command) *client.CommandResponse {
+func (s *Services) ProxyEnvoyAdmin(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	req := cmd.GetEnvoyAdmin()
 	if req == nil {
 		s.logger.Errorf("envoy admin payload is nil")
@@ -24,7 +24,7 @@ func (s *Services) ProxyEnvoyAdmin(cmd *client.Command) *client.CommandResponse 
 		return helper.NewErrorResponse(cmd, "invalid method")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	if req.GetPath() == "/envoy" {

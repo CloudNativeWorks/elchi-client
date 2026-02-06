@@ -1,20 +1,22 @@
 package services
 
 import (
+	"context"
+
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/waf"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 	"github.com/sirupsen/logrus"
 )
 
 // WafVersionService handles WAF version management commands
-func (s *Services) WafVersionService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) WafVersionService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	logger := logrus.WithFields(logrus.Fields{
 		"command_id": cmd.CommandId,
 		"service":    "waf-version",
 	})
 
 	logger.Info("Processing WAF version command")
-	
+
 	// Validate command payload
 	wafVersionRequest := cmd.GetWafVersion()
 	if wafVersionRequest == nil {
@@ -35,16 +37,16 @@ func (s *Services) WafVersionService(cmd *client.Command) *client.CommandRespons
 
 	// Create WAF manager
 	manager := waf.NewManager()
-	
+
 	// Process the request
-	response := manager.ProcessWafVersionCommand(wafVersionRequest)
+	response := manager.ProcessWafVersionCommand(ctx, wafVersionRequest)
 
 	// Log the result
 	if response.Status == client.VersionStatus_SUCCESS {
 		logger.WithFields(logrus.Fields{
-			"operation":          wafVersionRequest.Operation,
-			"downloaded_count":   len(response.DownloadedVersions),
-			"installed_version":  response.InstalledVersion,
+			"operation":         wafVersionRequest.Operation,
+			"downloaded_count":  len(response.DownloadedVersions),
+			"installed_version": response.InstalledVersion,
 		}).Info("WAF version command completed successfully")
 	} else {
 		logger.WithFields(logrus.Fields{

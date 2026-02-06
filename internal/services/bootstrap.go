@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/files"
@@ -9,7 +10,7 @@ import (
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) UpdateBootstrapService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) UpdateBootstrapService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	bootstrapReq := cmd.GetUpdateBootstrap()
 	if bootstrapReq == nil {
 		return helper.NewErrorResponse(cmd, "bootstrap request is nil")
@@ -22,7 +23,7 @@ func (s *Services) UpdateBootstrapService(cmd *client.Command) *client.CommandRe
 		return helper.NewErrorResponse(cmd, err.Error())
 	}
 
-	_, err = systemd.ServiceControl(fileName, client.SubCommandType_SUB_RELOAD, s.logger, s.runner)
+	_, err = systemd.ServiceControl(ctx, fileName, client.SubCommandType_SUB_RELOAD, s.logger, s.runner)
 	if err != nil {
 		return helper.NewErrorResponse(cmd, err.Error())
 	}

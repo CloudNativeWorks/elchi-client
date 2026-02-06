@@ -9,8 +9,8 @@ import (
 
 // RouteInfo holds parsed route information
 type RouteInfo struct {
-	Ifname string
-	Routes []*client.Route
+	Ifname          string
+	Routes          []*client.Route
 	RoutingPolicies []*client.RoutingPolicy
 }
 

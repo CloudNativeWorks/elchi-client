@@ -124,7 +124,7 @@ func (vm *VtyshManager) ExecuteCommand(command string) (string, error) {
 			}
 			return "", errors.New(errMsg)
 		}
-		return "", fmt.Errorf("vtysh execution failed: %v", err)
+		return "", fmt.Errorf("vtysh execution failed: %w", err)
 	}
 
 	// Check for error indicators in output
@@ -152,7 +152,9 @@ func (vm *VtyshManager) ExecuteCommand(command string) (string, error) {
 func (vm *VtyshManager) WriteMemory() error {
 	vm.logger.Info("Saving FRR configuration to memory")
 
-	cmd := exec.Command("sudo", "vtysh", "-c", "write memory")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sudo", "vtysh", "-c", "write memory")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -162,7 +164,7 @@ func (vm *VtyshManager) WriteMemory() error {
 		if stderr.Len() > 0 {
 			vm.logger.Error(fmt.Sprintf("Error details: %s", stderr.String()))
 		}
-		return fmt.Errorf("failed to save configuration: %v", err)
+		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
 	vm.logger.Info("Configuration saved successfully")
@@ -183,11 +185,12 @@ func (vm *VtyshManager) ExecuteSimpleSession(commands []string) error {
 	fullCommands = append(fullCommands, commands...)
 
 	var cmdLog strings.Builder
-	fmt.Printf("\n=== BEGIN COMMAND SEQUENCE ===\n")
+	cmdLog.WriteString("\n=== BEGIN COMMAND SEQUENCE ===\n")
 	for _, cmd := range fullCommands {
-		fmt.Println(cmd)
+		cmdLog.WriteString(cmd)
+		cmdLog.WriteString("\n")
 	}
-	fmt.Println("=== END COMMAND SEQUENCE ===")
+	cmdLog.WriteString("=== END COMMAND SEQUENCE ===")
 	vm.logger.Info(cmdLog.String())
 
 	// Create command string
@@ -209,17 +212,19 @@ func (vm *VtyshManager) ExecuteSimpleSession(commands []string) error {
 
 	// Create detailed execution log
 	var execLog strings.Builder
-	fmt.Printf("\n=== COMMAND EXECUTION DETAILS ===\n")
-	fmt.Printf("Execution Time: %v\n", duration)
+	execLog.WriteString("\n=== COMMAND EXECUTION DETAILS ===\n")
+	execLog.WriteString(fmt.Sprintf("Execution Time: %v\n", duration))
 	if stdout.Len() > 0 {
-		fmt.Printf("\nSTDOUT:\n")
-		fmt.Println(stdout.String())
+		execLog.WriteString("\nSTDOUT:\n")
+		execLog.WriteString(stdout.String())
+		execLog.WriteString("\n")
 	}
 	if stderr.Len() > 0 {
-		fmt.Printf("\nSTDERR:\n")
-		fmt.Println(stderr.String())
+		execLog.WriteString("\nSTDERR:\n")
+		execLog.WriteString(stderr.String())
+		execLog.WriteString("\n")
 	}
-	fmt.Printf("\n=== END EXECUTION DETAILS ===")
+	execLog.WriteString("=== END EXECUTION DETAILS ===")
 	vm.logger.Debug(execLog.String())
 
 	if err != nil {
@@ -250,7 +255,7 @@ func (vm *VtyshManager) ExecuteSimpleSession(commands []string) error {
 			return fmt.Errorf("FRR daemon connection error: %s", errOutput)
 		}
 
-		return fmt.Errorf("vtysh execution failed: %v (stdout: %s, stderr: %s)",
+		return fmt.Errorf("vtysh execution failed: %w (stdout: %s, stderr: %s)",
 			err, stdout.String(), stderr.String())
 	}
 
@@ -261,7 +266,7 @@ func (vm *VtyshManager) ExecuteSimpleSession(commands []string) error {
 			strings.Contains(output, "WARN:") {
 			vm.logger.Warn(fmt.Sprintf("⚠️ FRR warnings:\n%s", output))
 		}
-		
+
 		// Check for Unknown command errors in stdout
 		if strings.Contains(output, "% Unknown command:") {
 			return fmt.Errorf("FRR configuration error - Unknown commands found:\n%s", output)
@@ -270,7 +275,7 @@ func (vm *VtyshManager) ExecuteSimpleSession(commands []string) error {
 
 	// Save configuration after successful execution
 	if err := vm.WriteMemory(); err != nil {
-		return fmt.Errorf("configuration applied but failed to save: %v", err)
+		return fmt.Errorf("configuration applied but failed to save: %w", err)
 	}
 
 	vm.logger.Info("✓ FRR Configuration SUCCESS - All commands executed successfully")
@@ -337,7 +342,7 @@ func (vm *VtyshManager) ExecuteCommandsInContext(context string, commands []stri
 			}
 			return errors.New(errMsg)
 		}
-		return fmt.Errorf("vtysh execution failed: %v", err)
+		return fmt.Errorf("vtysh execution failed: %w", err)
 	}
 
 	// Check for error indicators in output
@@ -352,7 +357,7 @@ func (vm *VtyshManager) ExecuteCommandsInContext(context string, commands []stri
 
 	// Save configuration after successful execution
 	if err := vm.WriteMemory(); err != nil {
-		return fmt.Errorf("configuration applied but failed to save: %v", err)
+		return fmt.Errorf("configuration applied but failed to save: %w", err)
 	}
 
 	vm.logger.Debug("vtysh context session completed successfully")
@@ -415,13 +420,13 @@ func (vm *VtyshManager) CheckProtocolRunning(protocol string) (bool, error) {
 func (vm *VtyshManager) ValidateVtyshAvailable() error {
 	cmd := exec.Command("which", "vtysh")
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("vtysh not found in PATH: %v", err)
+		return fmt.Errorf("vtysh not found in PATH: %w", err)
 	}
 
 	// Try to execute a simple command
 	_, err := vm.ExecuteCommand("show version")
 	if err != nil {
-		return fmt.Errorf("vtysh not accessible: %v", err)
+		return fmt.Errorf("vtysh not accessible: %w", err)
 	}
 
 	return nil

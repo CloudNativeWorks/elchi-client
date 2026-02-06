@@ -1,12 +1,14 @@
 package services
 
 import (
+	"context"
+
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/journal"
 	"github.com/CloudNativeWorks/elchi-client/pkg/helper"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) GeneralLog(cmd *client.Command) *client.CommandResponse {
+func (s *Services) GeneralLog(_ context.Context, cmd *client.Command) *client.CommandResponse {
 	var service string
 	generalLogReq := cmd.GetGeneralLog()
 	if generalLogReq == nil {
@@ -27,7 +29,7 @@ func (s *Services) GeneralLog(cmd *client.Command) *client.CommandResponse {
 
 	switch service {
 	case "elchi-client":
-		logs, err = journal.GetLastNGeneralLogs(service, generalLogReq.Count)
+		logs, err = journal.GetLastNGeneralLogs(service, generalLogReq.Count, s.logger)
 	case "frr":
 		logs, err = journal.GetLastNGeneralLogsFromSystemd(service, generalLogReq.Count)
 	default:

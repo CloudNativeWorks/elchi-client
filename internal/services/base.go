@@ -27,5 +27,3 @@ func NewServices() *Services {
 func (s *Services) SetGRPCClient(client *elchigrpc.Client) {
 	s.grpcClient = client
 }
-
-

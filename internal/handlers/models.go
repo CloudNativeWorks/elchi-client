@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
+
 	"github.com/CloudNativeWorks/elchi-client/internal/services"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
 type CommandHandlerInterface interface {
-	Handle(cmd *client.Command) *client.CommandResponse
+	Handle(ctx context.Context, cmd *client.Command) *client.CommandResponse
 }
 
 type CommandRegistry struct {

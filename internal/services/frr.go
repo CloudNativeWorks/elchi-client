@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/frr/bgp"
@@ -9,7 +10,7 @@ import (
 )
 
 // Handle FRR protocol requests
-func (s *Services) FrrService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) FrrService(_ context.Context, cmd *client.Command) *client.CommandResponse {
 	s.logger.Info("Starting FRR service request processing")
 	defer func() {
 		s.logger.Info("Completed FRR service request processing")

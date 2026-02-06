@@ -2,11 +2,13 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/config"
 	grpcClient "github.com/CloudNativeWorks/elchi-client/internal/grpc"
+	"github.com/CloudNativeWorks/elchi-client/pkg/helper"
 	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	"github.com/CloudNativeWorks/elchi-client/pkg/ping"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
@@ -28,11 +30,11 @@ type HeartbeatService struct {
 	config     *config.Config
 	clientID   string
 
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	mu         sync.RWMutex
-	running    bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	mu      sync.RWMutex
+	running bool
 
 	// Connection monitor management
 	monitorCtx    context.Context
@@ -70,6 +72,15 @@ func (h *HeartbeatService) Initialize(clientID string) error {
 
 	h.clientID = clientID
 
+	// Close previous gRPC connection if any to prevent leak
+	if h.grpcConn != nil {
+		h.logger.Debug("Closing previous heartbeat gRPC connection")
+		if err := h.grpcConn.Close(); err != nil {
+			h.logger.Warnf("Failed to close previous heartbeat connection: %v", err)
+		}
+		h.grpcConn = nil
+	}
+
 	// Create dedicated gRPC connection for heartbeat
 	h.logger.Info("Creating dedicated gRPC connection for heartbeat")
 	grpcConn, err := grpcClient.NewClient(h.config)
@@ -96,10 +107,12 @@ func (h *HeartbeatService) Initialize(clientID string) error {
 
 	// Start connection monitoring for heartbeat (properly tracked)
 	h.monitorCtx, h.monitorCancel = context.WithCancel(context.Background())
+	monitorCtx := h.monitorCtx // capture under lock for goroutine safety
 	h.wg.Add(1)
 	go func() {
+		defer helper.RecoverPanic(h.logger, "heartbeat-monitor")
 		defer h.wg.Done()
-		h.monitorConnection()
+		h.monitorConnection(monitorCtx)
 	}()
 
 	return nil
@@ -109,28 +122,27 @@ func (h *HeartbeatService) Initialize(clientID string) error {
 func (h *HeartbeatService) Start() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	if h.running {
 		h.logger.Warn("Heartbeat service is already running")
 		return nil
 	}
-	
+
 	if !h.pingClient.IsReady() {
-		h.logger.Error("Cannot start heartbeat service: ping client not ready")
-		return nil // Don't return error, wait for connection to be set
+		return fmt.Errorf("heartbeat ping client not ready")
 	}
-	
+
 	h.ctx, h.cancel = context.WithCancel(context.Background())
 	h.running = true
-	
+
 	h.wg.Add(1)
 	go h.run()
-	
+
 	h.logger.WithFields(logger.Fields{
 		"interval": HeartbeatInterval.String(),
 		"timeout":  PingTimeout.String(),
 	}).Info("Heartbeat service started")
-	
+
 	return nil
 }
 
@@ -189,12 +201,13 @@ func (h *HeartbeatService) SendPing() (*client.PingResponse, error) {
 	h.mu.RLock()
 	pingClient := h.pingClient
 	h.mu.RUnlock()
-	
+
 	return pingClient.SendPingWithTimeout(PingTimeout)
 }
 
 // run is the main heartbeat loop
 func (h *HeartbeatService) run() {
+	defer helper.RecoverPanic(h.logger, "heartbeat-run")
 	defer h.wg.Done()
 
 	// Send initial ping immediately
@@ -246,7 +259,7 @@ func (h *HeartbeatService) sendPingAndCheckRegistration() {
 }
 
 // monitorConnection monitors the heartbeat connection and reconnects if needed
-func (h *HeartbeatService) monitorConnection() {
+func (h *HeartbeatService) monitorConnection(ctx context.Context) {
 	h.logger.Info("Heartbeat connection monitoring started")
 	defer h.logger.Info("Heartbeat connection monitoring stopped")
 
@@ -255,7 +268,7 @@ func (h *HeartbeatService) monitorConnection() {
 
 	for {
 		select {
-		case <-h.monitorCtx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			h.mu.RLock()
@@ -263,24 +276,28 @@ func (h *HeartbeatService) monitorConnection() {
 			clientID := h.clientID
 			config := h.config
 			h.mu.RUnlock()
-			
+
 			if grpcConn == nil {
 				continue
 			}
-			
+
 			// Check connection state
-			state := grpcConn.GetConnection().GetState()
+			conn := grpcConn.GetConnection()
+			if conn == nil {
+				continue
+			}
+			state := conn.GetState()
 			switch state.String() {
 			case "TRANSIENT_FAILURE", "SHUTDOWN":
 				h.logger.WithFields(logger.Fields{
 					"state": state.String(),
 				}).Warn("Heartbeat connection lost, attempting reconnect")
-				
+
 				// Reconnect
 				if err := h.reconnectHeartbeat(clientID, config); err != nil {
 					h.logger.Errorf("Failed to reconnect heartbeat: %v", err)
 				}
-				
+
 			case "READY":
 				// Connection is healthy, do nothing
 			default:
@@ -296,34 +313,34 @@ func (h *HeartbeatService) monitorConnection() {
 func (h *HeartbeatService) reconnectHeartbeat(clientID string, config *config.Config) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	h.logger.Info("Reconnecting heartbeat service")
-	
+
 	// Close old connection
 	if h.grpcConn != nil {
 		h.grpcConn.Close()
 		h.grpcConn = nil
 	}
-	
+
 	// Create new connection
 	grpcConn, err := grpcClient.NewClient(config)
 	if err != nil {
 		return err
 	}
-	
+
 	// Set client ID and connect
 	grpcConn.SetClientID(clientID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	if err := grpcConn.Connect(ctx); err != nil {
 		return err
 	}
-	
+
 	// Update connections
 	h.grpcConn = grpcConn
 	h.pingClient.UpdateConnection(grpcConn.GetConnection(), clientID)
-	
+
 	h.logger.Info("Heartbeat service reconnected successfully")
 	return nil
 }

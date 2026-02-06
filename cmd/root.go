@@ -11,10 +11,10 @@ import (
 )
 
 var (
-	cfgFile string
+	cfgFile    string
 	clientName string
-	Cfg     *config.Config
-	Version string
+	Cfg        *config.Config
+	Version    string
 )
 
 var RootCmd = &cobra.Command{
@@ -50,9 +50,9 @@ func initConfig() {
 
 		// Initialize logger with default config
 		if err := logger.Init(logger.Config{
-			Level:      Cfg.Logging.Level,
-			Format:     Cfg.Logging.Format,
-			Module:     "root",
+			Level:  Cfg.Logging.Level,
+			Format: Cfg.Logging.Format,
+			Module: "root",
 		}); err != nil {
 			fmt.Printf("Fatal: Logger could not be initialized: %v\n", err)
 			os.Exit(1)

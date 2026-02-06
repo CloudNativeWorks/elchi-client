@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/journal"
@@ -9,18 +10,18 @@ import (
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) SystemdService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) SystemdService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	switch cmd.SubType {
 	case client.SubCommandType_SUB_LOGS:
 		return s.SystemdServiceLogs(cmd)
 	case client.SubCommandType_SUB_RELOAD, client.SubCommandType_SUB_START, client.SubCommandType_SUB_STOP, client.SubCommandType_SUB_RESTART, client.SubCommandType_SUB_STATUS:
-		return s.SystemdServiceAction(cmd)
+		return s.SystemdServiceAction(ctx, cmd)
 	}
 
 	return helper.NewErrorResponse(cmd, "invalid sub command")
 }
 
-func (s *Services) SystemdServiceAction(cmd *client.Command) *client.CommandResponse {
+func (s *Services) SystemdServiceAction(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	serviceReq := cmd.GetService()
 	if serviceReq == nil {
 		return helper.NewErrorResponse(cmd, "service request is nil")
@@ -29,7 +30,7 @@ func (s *Services) SystemdServiceAction(cmd *client.Command) *client.CommandResp
 	identifier := fmt.Sprintf("%s-%d", serviceReq.GetName(), serviceReq.GetPort())
 	action := cmd.GetSubType()
 
-	status, err := systemd.ServiceControl(identifier, action, s.logger, s.runner)
+	status, err := systemd.ServiceControl(ctx, identifier, action, s.logger, s.runner)
 	if err != nil {
 		return helper.NewErrorResponse(cmd, err.Error())
 	}
@@ -63,7 +64,7 @@ func (s *Services) SystemdServiceLogs(cmd *client.Command) *client.CommandRespon
 
 	identifier := fmt.Sprintf("%s-%d", serviceReq.GetName(), serviceReq.GetPort())
 
-	logs, err := journal.GetLastNLogs(identifier, serviceReq)
+	logs, err := journal.GetLastNLogs(identifier, serviceReq, s.logger)
 	if err != nil {
 		s.logger.Errorf("failed to get logs: %v", err)
 		return helper.NewErrorResponse(cmd, err.Error())

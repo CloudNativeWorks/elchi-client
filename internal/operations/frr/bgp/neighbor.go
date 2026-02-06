@@ -804,7 +804,7 @@ func (nm *NeighborManager) processBooleanFlags(builder *NeighborCommandBuilder, 
 	nm.processBooleanFlag(builder, "next-hop-self", current.NextHopSelf, desired.NextHopSelf, true)
 	nm.processBooleanFlag(builder, "soft-reconfiguration inbound", current.SoftReconfiguration, desired.SoftReconfiguration, true)
 	nm.processBooleanFlag(builder, "shutdown", current.Shutdown, desired.Shutdown, false)
-	
+
 	// Process graceful restart flags
 	nm.processGracefulRestartFlags(builder, current, desired)
 }
@@ -825,7 +825,7 @@ func (nm *NeighborManager) processGracefulRestartFlags(builder *NeighborCommandB
 			})
 		}
 	}
-	
+
 	// Check if graceful restart helper mode changed
 	if current.GracefulRestartHelper != desired.GracefulRestartHelper {
 		if desired.GracefulRestartHelper {
@@ -841,7 +841,7 @@ func (nm *NeighborManager) processGracefulRestartFlags(builder *NeighborCommandB
 			})
 		}
 	}
-	
+
 	// Check if graceful restart disable changed
 	if current.GracefulRestartDisable != desired.GracefulRestartDisable {
 		if desired.GracefulRestartDisable {
@@ -881,7 +881,7 @@ func boolToAction(value bool) string {
 func (nm *NeighborManager) parseNeighborsFromConfig() ([]*client.BgpNeighbor, error) {
 	output, err := nm.vtysh.ExecuteCommand("show running-config bgp")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get BGP configuration: %v", err)
+		return nil, fmt.Errorf("failed to get BGP configuration: %w", err)
 	}
 
 	neighbors := make(map[string]*client.BgpNeighbor)
@@ -1058,7 +1058,7 @@ func (nm *NeighborManager) neighborNeedsUpdate(current, desired *client.BgpNeigh
 			nm.logger.Debug(fmt.Sprintf("  Description: '%s' -> '%s'", current.Description, desired.Description))
 		}
 		if current.Password != desired.Password {
-			nm.logger.Debug(fmt.Sprintf("  Password: '%s' -> '%s'", current.Password, desired.Password))
+			nm.logger.Debug("  Password: [changed]")
 		}
 		if current.UpdateSource != desired.UpdateSource {
 			nm.logger.Debug(fmt.Sprintf("  UpdateSource: '%s' -> '%s'", current.UpdateSource, desired.UpdateSource))
@@ -1089,9 +1089,10 @@ func (nm *NeighborManager) sanitizeDescription(description string) string {
 	var builder strings.Builder
 	builder.Grow(len(description)) // Pre-allocate capacity
 
-	// Process character by character (more efficient than multiple ReplaceAll calls)
+	// Strip control characters (prevents vtysh command injection via newlines),
+	// quotes (prevents vtysh syntax issues)
 	for _, char := range description {
-		if char != '"' && char != '\'' {
+		if char >= 0x20 && char != '"' && char != '\'' {
 			builder.WriteRune(char)
 		}
 	}
@@ -1198,7 +1199,7 @@ func (nm *NeighborManager) stringContains(slice []string, str string) bool {
 func (nm *NeighborManager) ParseNeighborDetails(peerIP string, asNumber uint32) (*client.BgpNeighbor, error) {
 	output, err := nm.vtysh.ExecuteCommand("show running-config bgp")
 	if err != nil {
-		return nil, fmt.Errorf("command execution error: %v", err)
+		return nil, fmt.Errorf("command execution error: %w", err)
 	}
 
 	neighbor := &client.BgpNeighbor{

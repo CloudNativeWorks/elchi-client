@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	"github.com/CloudNativeWorks/elchi-proto/client"
 )
 
@@ -14,7 +15,7 @@ var (
 )
 
 // GetLastNLogs reads Envoy logs from file system instead of systemd journal
-func GetLastNLogs(identifier string, serviceReq *client.RequestService) ([]*client.Logs, error) {
+func GetLastNLogs(identifier string, serviceReq *client.RequestService, log *logger.Logger) ([]*client.Logs, error) {
 	logTypeFilter := serviceReq.GetLogType()
 
 	// Determine which log files to read based on LogType
@@ -32,7 +33,7 @@ func GetLastNLogs(identifier string, serviceReq *client.RequestService) ([]*clie
 		logPaths = append(logPaths, "/var/log/elchi/"+identifier+"_system.log")
 	}
 
-	fmt.Printf("DEBUG: Reading logs from: %v (identifier: %s, count: %d, logType: %v)\n",
+	log.Debugf("Reading logs from: %v (identifier: %s, count: %d, logType: %v)",
 		logPaths, identifier, serviceReq.GetCount(), logTypeFilter)
 
 	// Read lines from all specified log files
@@ -44,9 +45,9 @@ func GetLastNLogs(identifier string, serviceReq *client.RequestService) ([]*clie
 
 	var allLines []string
 	for _, logPath := range logPaths {
-		lines, err := readLastNLinesFromRotatedLogs(logPath, maxLinesToRead)
+		lines, err := readLastNLinesFromRotatedLogs(logPath, maxLinesToRead, log)
 		if err != nil {
-			fmt.Printf("DEBUG: Failed to read log file %s: %v\n", logPath, err)
+			log.Debugf("Failed to read log file %s: %v", logPath, err)
 			// Continue to next file instead of failing completely
 			continue
 		}
@@ -57,7 +58,7 @@ func GetLastNLogs(identifier string, serviceReq *client.RequestService) ([]*clie
 		return nil, fmt.Errorf("no log files found or all log files are empty")
 	}
 
-	fmt.Printf("DEBUG: Read %d total lines from %d log file(s)\n", len(allLines), len(logPaths))
+	log.Debugf("Read %d total lines from %d log file(s)", len(allLines), len(logPaths))
 
 	levels := serviceReq.GetLevels()
 	components := serviceReq.GetComponents()
@@ -155,8 +156,9 @@ func GetLastNLogs(identifier string, serviceReq *client.RequestService) ([]*clie
 			continue
 		}
 
-		// Process system logs
-		if logType == LogTypeSystem {
+		// Process based on log type
+		switch logType {
+		case LogTypeSystem:
 			// First, process the previous accumulated log (if any)
 			if currentHeader != "" {
 				ts, _, level, component, _, msg := parseSystemLogLine(currentHeader)
@@ -204,7 +206,7 @@ func GetLastNLogs(identifier string, serviceReq *client.RequestService) ([]*clie
 			// Set new header and reset continuation lines
 			currentHeader = message
 			currentMsgLines = nil
-		} else if logType == LogTypeUnknown {
+		case LogTypeUnknown:
 			// Continuation line for a system log (reading in reverse, so append)
 			// Even if currentHeader is empty, collect continuation lines for the next header
 			currentMsgLines = append(currentMsgLines, message)
@@ -258,7 +260,7 @@ func GetLastNLogs(identifier string, serviceReq *client.RequestService) ([]*clie
 		logs = logs[:serviceReq.GetCount()]
 	}
 
-	fmt.Printf("DEBUG: Returning %d logs (filters: levels=%v, components=%v, logType=%v)\n",
+	log.Debugf("Returning %d logs (filters: levels=%v, components=%v, logType=%v)",
 		len(logs), serviceReq.GetLevels(), serviceReq.GetComponents(), serviceReq.GetLogType())
 
 	return logs, nil

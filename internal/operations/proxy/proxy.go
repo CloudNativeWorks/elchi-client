@@ -6,24 +6,25 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"time"
 
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
+
+var defaultHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
 
 func Do(ctx context.Context, req *client.RequestEnvoyAdmin) (*client.ResponseEnvoyAdmin, error) {
 	u := fmt.Sprintf("http://127.0.0.1:%d%s", req.Port, req.Path)
 
 	if len(req.Queries) > 0 {
-		q := "?"
-		first := true
+		params := url.Values{}
 		for k, v := range req.Queries {
-			if !first {
-				q += "&"
-			}
-			q += k + "=" + v
-			first = false
+			params.Set(k, v)
 		}
-		u += q
+		u += "?" + params.Encode()
 	}
 
 	var bodyReader io.Reader
@@ -39,8 +40,7 @@ func Do(ctx context.Context, req *client.RequestEnvoyAdmin) (*client.ResponseEnv
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	clientHttp := &http.Client{}
-	resp, err := clientHttp.Do(httpReq)
+	resp, err := defaultHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}

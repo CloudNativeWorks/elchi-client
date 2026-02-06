@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,7 +31,7 @@ type DeploymentCheckResult struct {
 }
 
 // CheckExistingDeployment checks if a deployment exists and if it needs updates
-func CheckExistingDeployment(deployReq *client.RequestDeploy, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*DeploymentCheckResult, error) {
+func CheckExistingDeployment(ctx context.Context, deployReq *client.RequestDeploy, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*DeploymentCheckResult, error) {
 	result := &DeploymentCheckResult{
 		Exists:              false,
 		NeedsUpdate:         false,
@@ -46,7 +47,11 @@ func CheckExistingDeployment(deployReq *client.RequestDeploy, logger *logger.Log
 
 	// Check if service exists
 	serviceExists := false
-	if output, _ := runner.RunWithOutput("systemctl", "show", "-p", "LoadState", serviceName); strings.Contains(string(output), "LoadState=loaded") {
+	output, err := runner.RunWithOutput(ctx, "systemctl", "show", "-p", "LoadState", serviceName)
+	if err != nil {
+		logger.Debugf("failed to check service load state: %v", err)
+	}
+	if strings.Contains(string(output), "LoadState=loaded") {
 		serviceExists = true
 		result.Exists = true
 		logger.Debugf("Found existing deployment: %s", serviceName)
@@ -223,7 +228,7 @@ func checkServiceChanged(existingPath string, deployReq *client.RequestDeploy, f
 }
 
 // ApplyDeploymentUpdates applies only the changed components
-func ApplyDeploymentUpdates(deployReq *client.RequestDeploy, checkResult *DeploymentCheckResult, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+func ApplyDeploymentUpdates(ctx context.Context, deployReq *client.RequestDeploy, checkResult *DeploymentCheckResult, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
 	filename := fmt.Sprintf("%s-%d", deployReq.GetName(), deployReq.GetPort())
 	serviceName := fmt.Sprintf("%s.service", filename)
 	ifaceName := fmt.Sprintf("elchi-if-%d", deployReq.GetPort())
@@ -285,7 +290,7 @@ func ApplyDeploymentUpdates(deployReq *client.RequestDeploy, checkResult *Deploy
 	// Reload systemd if service file changed
 	if needsSystemdReload {
 		logger.Infof("Reloading systemd daemon")
-		if err := runner.RunWithS("systemctl", "daemon-reload"); err != nil {
+		if err := runner.RunWithS(ctx, "systemctl", "daemon-reload"); err != nil {
 			return fmt.Errorf("failed to reload systemd: %w", err)
 		}
 	}
@@ -293,7 +298,7 @@ func ApplyDeploymentUpdates(deployReq *client.RequestDeploy, checkResult *Deploy
 	// Restart service if needed
 	if checkResult.ServiceNeedsRestart {
 		logger.Infof("Restarting service %s due to configuration changes", serviceName)
-		if err := runner.RunWithS("systemctl", "restart", serviceName); err != nil {
+		if err := runner.RunWithS(ctx, "systemctl", "restart", serviceName); err != nil {
 			return fmt.Errorf("failed to restart service: %w", err)
 		}
 		logger.Infof("Service restarted successfully: %s", serviceName)

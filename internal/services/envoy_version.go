@@ -1,20 +1,22 @@
 package services
 
 import (
+	"context"
+
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/envoy"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 	"github.com/sirupsen/logrus"
 )
 
 // EnvoyVersionService handles envoy version management commands
-func (s *Services) EnvoyVersionService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) EnvoyVersionService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	logger := logrus.WithFields(logrus.Fields{
 		"command_id": cmd.CommandId,
 		"service":    "envoy-version",
 	})
 
 	logger.Info("Processing envoy version command")
-	
+
 	// Validate command payload
 	envoyVersionRequest := cmd.GetEnvoyVersion()
 	if envoyVersionRequest == nil {
@@ -35,16 +37,16 @@ func (s *Services) EnvoyVersionService(cmd *client.Command) *client.CommandRespo
 
 	// Create envoy manager
 	manager := envoy.NewManager()
-	
+
 	// Process the request
-	response := manager.ProcessEnvoyVersionCommand(envoyVersionRequest)
+	response := manager.ProcessEnvoyVersionCommand(ctx, envoyVersionRequest)
 
 	// Log the result
 	if response.Status == client.VersionStatus_SUCCESS {
 		logger.WithFields(logrus.Fields{
-			"operation":          envoyVersionRequest.Operation,
-			"downloaded_count":   len(response.DownloadedVersions),
-			"installed_version":  response.InstalledVersion,
+			"operation":         envoyVersionRequest.Operation,
+			"downloaded_count":  len(response.DownloadedVersions),
+			"installed_version": response.InstalledVersion,
 		}).Info("Envoy version command completed successfully")
 	} else {
 		logger.WithFields(logrus.Fields{

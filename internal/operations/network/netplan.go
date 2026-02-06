@@ -62,7 +62,7 @@ func (nm *NetplanManager) SetGRPCConnection(conn *grpc.ClientConn, clientID stri
 // ApplyNetplanConfig applies netplan configuration with connection protection
 func (nm *NetplanManager) ApplyNetplanConfig(config *client.NetplanConfig) error {
 	nm.logger.Info("Starting netplan configuration apply")
-	nm.logger.Debugf("Config parameters - TestMode:%t, PreserveConnection:%t, Timeout:%d", 
+	nm.logger.Debugf("Config parameters - TestMode:%t, PreserveConnection:%t, Timeout:%d",
 		config.TestMode, config.PreserveControllerConnection, config.TestTimeoutSeconds)
 
 	// Validate config
@@ -71,12 +71,12 @@ func (nm *NetplanManager) ApplyNetplanConfig(config *client.NetplanConfig) error
 		return fmt.Errorf("netplan YAML content is empty")
 	}
 	nm.logger.Debugf("YAML content length: %d bytes", len(config.YamlContent))
-	
+
 	// Validate YAML syntax early to prevent invalid config application
 	nm.logger.Debug("Validating netplan YAML syntax")
 	if err := nm.ValidateConfig(config.YamlContent); err != nil {
 		nm.logger.Debugf("YAML validation failed: %v", err)
-		return fmt.Errorf("invalid netplan configuration: %v", err)
+		return fmt.Errorf("invalid netplan configuration: %w", err)
 	}
 	nm.logger.Debug("YAML validation successful")
 
@@ -84,14 +84,14 @@ func (nm *NetplanManager) ApplyNetplanConfig(config *client.NetplanConfig) error
 	nm.logger.Debug("Creating configuration backup")
 	if err := nm.createBackup(); err != nil {
 		nm.logger.Debugf("Backup creation failed: %v", err)
-		return fmt.Errorf("failed to create backup: %v", err)
+		return fmt.Errorf("failed to create backup: %w", err)
 	}
 
 	// Write new configuration
 	nm.logger.Debug("Writing new netplan configuration")
 	if err := nm.writeConfig(config.YamlContent); err != nil {
 		nm.logger.Debugf("Config write failed: %v", err)
-		return fmt.Errorf("failed to write netplan config: %v", err)
+		return fmt.Errorf("failed to write netplan config: %w", err)
 	}
 
 	// Apply configuration based on mode
@@ -117,21 +117,23 @@ func (nm *NetplanManager) createBackup() error {
 	data, err := os.ReadFile(nm.configPath)
 	if err != nil {
 		nm.logger.Debugf("Failed to read current config: %v", err)
-		return fmt.Errorf("failed to read current config: %v", err)
+		return fmt.Errorf("failed to read current config: %w", err)
 	}
 	nm.logger.Debugf("Read %d bytes from current config", len(data))
 
 	nm.logger.Debugf("Writing backup to: %s", nm.backupPath)
 	// Use sudo tee to write backup with root ownership
-	cmd := exec.Command("sudo", "tee", nm.backupPath)
+	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cmdCancel()
+	cmd := exec.CommandContext(cmdCtx, "sudo", "tee", nm.backupPath)
 	cmd.Stdin = strings.NewReader(string(data))
 	if err := cmd.Run(); err != nil {
 		nm.logger.Debugf("Failed to write backup via sudo tee: %v", err)
-		return fmt.Errorf("failed to write backup: %v", err)
+		return fmt.Errorf("failed to write backup: %w", err)
 	}
-	
+
 	// Set proper permissions
-	chmodCmd := exec.Command("sudo", "chmod", "0600", nm.backupPath)
+	chmodCmd := exec.CommandContext(cmdCtx, "sudo", "chmod", "0600", nm.backupPath)
 	if err := chmodCmd.Run(); err != nil {
 		nm.logger.Warnf("Failed to set backup permissions: %v", err)
 	}
@@ -146,20 +148,22 @@ func (nm *NetplanManager) writeConfig(yamlContent string) error {
 	nm.logger.Debugf("Ensuring netplan directory exists: %s", nm.netplanPath)
 	if err := os.MkdirAll(nm.netplanPath, 0755); err != nil {
 		nm.logger.Debugf("Failed to create netplan directory: %v", err)
-		return fmt.Errorf("failed to create netplan directory: %v", err)
+		return fmt.Errorf("failed to create netplan directory: %w", err)
 	}
 
 	// Write config with proper permissions using sudo
 	nm.logger.Debugf("Writing config to: %s (%d bytes)", nm.configPath, len(yamlContent))
-	cmd := exec.Command("sudo", "tee", nm.configPath)
+	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cmdCancel()
+	cmd := exec.CommandContext(cmdCtx, "sudo", "tee", nm.configPath)
 	cmd.Stdin = strings.NewReader(yamlContent)
 	if err := cmd.Run(); err != nil {
 		nm.logger.Debugf("Failed to write netplan config via sudo tee: %v", err)
-		return fmt.Errorf("failed to write netplan config: %v", err)
+		return fmt.Errorf("failed to write netplan config: %w", err)
 	}
-	
+
 	// Set proper permissions
-	chmodCmd := exec.Command("sudo", "chmod", "0600", nm.configPath)
+	chmodCmd := exec.CommandContext(cmdCtx, "sudo", "chmod", "0600", nm.configPath)
 	if err := chmodCmd.Run(); err != nil {
 		nm.logger.Warnf("Failed to set config permissions: %v", err)
 	}
@@ -220,10 +224,10 @@ func (nm *NetplanManager) applyWithConnectionMonitoring(timeout uint32) error {
 		if err != nil {
 			nm.logger.Debugf("Netplan apply failed, initiating rollback: %v", err)
 			nm.rollback()
-			return fmt.Errorf("netplan apply failed: %v", err)
+			return fmt.Errorf("netplan apply failed: %w", err)
 		}
 		nm.logger.Debug("Netplan apply succeeded, waiting for connection check")
-		
+
 		// Apply succeeded, wait for connection check
 		select {
 		case connectionOK := <-monitorResult:
@@ -234,14 +238,14 @@ func (nm *NetplanManager) applyWithConnectionMonitoring(timeout uint32) error {
 			}
 			nm.logger.Info("Netplan apply successful with controller connection preserved")
 			return nil
-			
+
 		case <-time.After(5 * time.Second):
 			// Monitor didn't respond quickly enough
 			nm.logger.Debug("Connection monitor timeout, initiating rollback")
 			nm.rollback()
 			return fmt.Errorf("connection monitoring timeout, rolled back")
 		}
-		
+
 	case <-time.After(time.Duration(timeout) * time.Second):
 		// Apply timeout
 		nm.logger.Debug("Netplan apply timeout, initiating rollback")
@@ -253,18 +257,21 @@ func (nm *NetplanManager) applyWithConnectionMonitoring(timeout uint32) error {
 // executeNetplanTry executes netplan try command with sudo
 func (nm *NetplanManager) executeNetplanTry(timeout uint32) error {
 	nm.logger.Debugf("Executing netplan try with timeout %d seconds", timeout)
-	cmd := exec.Command("sudo", "netplan", "try", "--timeout", fmt.Sprintf("%d", timeout))
+	// Use a generous context timeout that exceeds the netplan try timeout
+	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), time.Duration(timeout+10)*time.Second)
+	defer cmdCancel()
+	cmd := exec.CommandContext(cmdCtx, "sudo", "netplan", "try", "--timeout", fmt.Sprintf("%d", timeout))
 	cmd.Dir = nm.netplanPath
 	nm.logger.Debugf("Command: %s, Working dir: %s", cmd.String(), cmd.Dir)
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		nm.logger.Debugf("netplan try command failed: %v", err)
 		nm.logger.Error(fmt.Sprintf("netplan try failed: %s", string(output)))
-		return fmt.Errorf("netplan try failed: %v, output: %s", err, string(output))
+		return fmt.Errorf("netplan try failed: %w, output: %s", err, string(output))
 	}
 	nm.logger.Debugf("netplan try output: %s", string(output))
-	
+
 	nm.logger.Info("Netplan try completed successfully")
 	return nil
 }
@@ -272,18 +279,20 @@ func (nm *NetplanManager) executeNetplanTry(timeout uint32) error {
 // executeNetplanApply executes direct netplan apply with sudo
 func (nm *NetplanManager) executeNetplanApply() error {
 	nm.logger.Debug("Executing netplan apply")
-	cmd := exec.Command("sudo", "netplan", "apply")
+	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cmdCancel()
+	cmd := exec.CommandContext(cmdCtx, "sudo", "netplan", "apply")
 	cmd.Dir = nm.netplanPath
 	nm.logger.Debugf("Command: %s, Working dir: %s", cmd.String(), cmd.Dir)
-	
+
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		nm.logger.Debugf("netplan apply command failed: %v", err)
 		nm.logger.Error(fmt.Sprintf("netplan apply failed: %s", string(output)))
-		return fmt.Errorf("netplan apply failed: %v, output: %s", err, string(output))
+		return fmt.Errorf("netplan apply failed: %w, output: %s", err, string(output))
 	}
 	nm.logger.Debugf("netplan apply output: %s", string(output))
-	
+
 	nm.logger.Info("Netplan apply completed successfully")
 	return nil
 }
@@ -309,21 +318,23 @@ func (nm *NetplanManager) rollback() error {
 	backupData, err := os.ReadFile(nm.backupPath)
 	if err != nil {
 		nm.logger.Debugf("Failed to read backup: %v", err)
-		return fmt.Errorf("failed to read backup: %v", err)
+		return fmt.Errorf("failed to read backup: %w", err)
 	}
 	nm.logger.Debugf("Read %d bytes from backup", len(backupData))
 
 	nm.logger.Debug("Restoring backup to config file")
 	// Use sudo tee to restore backup with root ownership
-	cmd := exec.Command("sudo", "tee", nm.configPath)
+	cmdCtx, cmdCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cmdCancel()
+	cmd := exec.CommandContext(cmdCtx, "sudo", "tee", nm.configPath)
 	cmd.Stdin = strings.NewReader(string(backupData))
 	if err := cmd.Run(); err != nil {
 		nm.logger.Debugf("Failed to restore backup via sudo tee: %v", err)
-		return fmt.Errorf("failed to restore backup: %v", err)
+		return fmt.Errorf("failed to restore backup: %w", err)
 	}
-	
+
 	// Set proper permissions
-	chmodCmd := exec.Command("sudo", "chmod", "0600", nm.configPath)
+	chmodCmd := exec.CommandContext(cmdCtx, "sudo", "chmod", "0600", nm.configPath)
 	if err := chmodCmd.Run(); err != nil {
 		nm.logger.Warnf("Failed to set restored config permissions: %v", err)
 	}
@@ -332,7 +343,7 @@ func (nm *NetplanManager) rollback() error {
 	nm.logger.Debug("Applying restored configuration")
 	if err := nm.executeNetplanApply(); err != nil {
 		nm.logger.Error("Failed to apply rollback configuration")
-		return fmt.Errorf("rollback apply failed: %v", err)
+		return fmt.Errorf("rollback apply failed: %w", err)
 	}
 
 	nm.logger.Info("Configuration successfully rolled back")
@@ -350,7 +361,7 @@ func (nm *NetplanManager) GetCurrentConfig() (string, error) {
 	data, err := os.ReadFile(nm.configPath)
 	if err != nil {
 		nm.logger.Debugf("Failed to read current config: %v", err)
-		return "", fmt.Errorf("failed to read current config: %v", err)
+		return "", fmt.Errorf("failed to read current config: %w", err)
 	}
 	nm.logger.Debugf("Read %d bytes from current config", len(data))
 
@@ -371,14 +382,14 @@ func (nm *NetplanManager) ValidateConfig(yamlContent string) error {
 	tmpFile, err := os.CreateTemp("", "netplan-validate-*.yaml")
 	if err != nil {
 		nm.logger.Debugf("Failed to create temp file: %v", err)
-		return fmt.Errorf("failed to create temp file: %v", err)
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	defer os.Remove(tmpFile.Name())
 	nm.logger.Debugf("Created temp file: %s", tmpFile.Name())
 
 	if _, err := tmpFile.WriteString(yamlContent); err != nil {
 		nm.logger.Debugf("Failed to write temp config: %v", err)
-		return fmt.Errorf("failed to write temp config: %v", err)
+		return fmt.Errorf("failed to write temp config: %w", err)
 	}
 	tmpFile.Close()
 	nm.logger.Debugf("Wrote %d bytes to temp file", len(yamlContent))
@@ -386,11 +397,13 @@ func (nm *NetplanManager) ValidateConfig(yamlContent string) error {
 	// Use netplan generate for validation (no sudo needed for temp dir)
 	rootDir := filepath.Dir(tmpFile.Name())
 	nm.logger.Debugf("Validating config with netplan generate --root %s", rootDir)
-	cmd := exec.Command("netplan", "generate", "--root", rootDir)
+	validateCtx, validateCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer validateCancel()
+	cmd := exec.CommandContext(validateCtx, "netplan", "generate", "--root", rootDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		nm.logger.Debugf("Config validation failed: %v, output: %s", err, string(output))
-		return fmt.Errorf("config validation failed: %v, output: %s", err, string(output))
+		return fmt.Errorf("config validation failed: %w, output: %s", err, string(output))
 	}
 	nm.logger.Debug("Config validation successful")
 
@@ -405,12 +418,12 @@ func NetplanApply(cmd *client.Command, logger *logger.Logger, grpcConn *grpc.Cli
 	}
 
 	manager := NewNetplanManager(logger)
-	
+
 	// Set gRPC connection for connectivity testing
 	if grpcConn != nil {
 		manager.SetGRPCConnection(grpcConn, clientID)
 	}
-	
+
 	// Process routing tables if provided (bulk update)
 	if len(networkReq.GetRoutingTables()) > 0 {
 		tableManager := NewTableManager(logger)
@@ -418,7 +431,7 @@ func NetplanApply(cmd *client.Command, logger *logger.Logger, grpcConn *grpc.Cli
 			return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to manage routing tables: %v", err))
 		}
 	}
-	
+
 	// Process table operations if provided (individual operations)
 	if len(networkReq.GetTableOperations()) > 0 {
 		tableManager := NewTableManager(logger)
@@ -426,7 +439,7 @@ func NetplanApply(cmd *client.Command, logger *logger.Logger, grpcConn *grpc.Cli
 			return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to manage table operations: %v", err))
 		}
 	}
-	
+
 	// Apply configuration
 	if err := manager.ApplyNetplanConfig(networkReq.GetNetplanConfig()); err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to apply netplan config: %v", err))
@@ -447,10 +460,10 @@ func NetplanApply(cmd *client.Command, logger *logger.Logger, grpcConn *grpc.Cli
 	}
 }
 
-// NetplanGet handles SUB_NETPLAN_GET command  
+// NetplanGet handles SUB_NETPLAN_GET command
 func NetplanGet(cmd *client.Command, logger *logger.Logger) *client.CommandResponse {
 	manager := NewNetplanManager(logger)
-	
+
 	currentConfig, err := manager.GetCurrentConfig()
 	if err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to get current config: %v", err))
@@ -477,7 +490,7 @@ func NetplanGet(cmd *client.Command, logger *logger.Logger) *client.CommandRespo
 // NetplanRollback handles SUB_NETPLAN_ROLLBACK command
 func NetplanRollback(cmd *client.Command, logger *logger.Logger) *client.CommandResponse {
 	manager := NewNetplanManager(logger)
-	
+
 	if err := manager.rollback(); err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("rollback failed: %v", err))
 	}
@@ -499,19 +512,19 @@ func NetplanRollback(cmd *client.Command, logger *logger.Logger) *client.Command
 // validateForbiddenConfigurations checks for route/routing-policy in netplan YAML
 func (nm *NetplanManager) validateForbiddenConfigurations(yamlContent string) error {
 	nm.logger.Debug("Parsing YAML to check for forbidden configurations")
-	
+
 	// Parse YAML content
 	var config map[string]interface{}
 	if err := yaml.Unmarshal([]byte(yamlContent), &config); err != nil {
 		nm.logger.Debugf("YAML parse error: %v", err)
-		return fmt.Errorf("invalid YAML format: %v", err)
+		return fmt.Errorf("invalid YAML format: %w", err)
 	}
-	
+
 	// Check for forbidden configurations
 	if err := nm.checkForbiddenInConfig(config, ""); err != nil {
 		return err
 	}
-	
+
 	nm.logger.Debug("No forbidden configurations found")
 	return nil
 }
@@ -525,7 +538,7 @@ func (nm *NetplanManager) checkForbiddenInConfig(config interface{}, path string
 			if path != "" {
 				currentPath = path + "." + key
 			}
-			
+
 			// Check for forbidden keys
 			if key == "routes" {
 				nm.logger.Debugf("Found forbidden 'routes' configuration at path: %s", currentPath)
@@ -535,7 +548,7 @@ func (nm *NetplanManager) checkForbiddenInConfig(config interface{}, path string
 				nm.logger.Debugf("Found forbidden 'routing-policy' configuration at path: %s", currentPath)
 				return fmt.Errorf("routing-policy configuration is forbidden in netplan YAML - routing policies are managed separately via dedicated policy files")
 			}
-			
+
 			// Recursively check nested objects
 			if err := nm.checkForbiddenInConfig(value, currentPath); err != nil {
 				return err
@@ -550,7 +563,7 @@ func (nm *NetplanManager) checkForbiddenInConfig(config interface{}, path string
 			}
 		}
 	}
-	
+
 	return nil
 }
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +33,9 @@ const (
 	maxBurstSize         = 50
 	maxConcurrentWorkers = 10
 )
+
+// ErrFatalRegistration indicates the server permanently rejected registration (no retry)
+var ErrFatalRegistration = fmt.Errorf("fatal registration error")
 
 // ClientSession represents a client session with the server
 type ClientSession struct {
@@ -83,7 +87,7 @@ func NewSessionManager(log *logger.Logger) *SessionManager {
 // Run starts the client session
 func (m *SessionManager) Run() error {
 	if err := m.initialize(); err != nil {
-		return fmt.Errorf("initialization failed: %v", err)
+		return fmt.Errorf("initialization failed: %w", err)
 	}
 
 	defer m.cleanup()
@@ -173,6 +177,12 @@ func (m *SessionManager) mainLoop() error {
 				return nil
 			}
 
+			// Fatal registration errors should not be retried
+			if errors.Is(err, ErrFatalRegistration) {
+				m.logger.Errorf("Fatal registration error, cannot retry: %v", err)
+				return err
+			}
+
 			retryCount++
 			m.logger.Warnf("Connection error (%d/%d) retrying: %v", retryCount, maxRetries, err)
 
@@ -207,12 +217,12 @@ func (m *SessionManager) mainLoop() error {
 
 		// Start stream management in a goroutine
 		go func() {
+			defer helper.RecoverPanic(m.logger, "stream-management")
 			defer close(streamDone)
-			if err := m.handleCommandStream(streamCtx); err != nil {
-				select {
-				case streamErrChan <- err:
-				default:
-				}
+			err := m.handleCommandStream(streamCtx)
+			select {
+			case streamErrChan <- err:
+			default:
 			}
 		}()
 
@@ -224,15 +234,21 @@ func (m *SessionManager) mainLoop() error {
 			return nil
 
 		case err := <-streamErrChan:
-			m.logger.Warnf("Stream error received, reconnecting: %v", err)
+			if err != nil {
+				m.logger.Warnf("Stream error received, reconnecting: %v", err)
+			} else {
+				m.logger.Warn("Stream ended unexpectedly, reconnecting")
+			}
 			streamCancel()
 			<-streamDone // Wait for goroutine to finish
 
 			// Clean up the connection
-			m.session.Lock()
-			m.session.isConnected = false
-			m.session.sessionToken = ""
-			m.session.Unlock()
+			func() {
+				m.session.Lock()
+				defer m.session.Unlock()
+				m.session.isConnected = false
+				m.session.sessionToken = ""
+			}()
 
 			// Context-aware sleep before reconnecting
 			select {
@@ -248,7 +264,7 @@ func (m *SessionManager) mainLoop() error {
 func (m *SessionManager) createSession() (*ClientSession, error) {
 	grpcConn, err := grpcClient.NewClient(Cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create GRPC client: %v", err)
+		return nil, fmt.Errorf("failed to create GRPC client: %w", err)
 	}
 
 	// Circuit breaker configuration
@@ -256,8 +272,11 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 		Name:    "command-breaker",
 		Timeout: 60 * time.Second,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			if counts.Requests < 3 {
+				return false
+			}
 			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
-			return counts.Requests >= 3 && failureRatio >= 0.6
+			return failureRatio >= 0.6
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
 			m.logger.Warnf("Circuit breaker state changed from %v to %v", from, to)
@@ -267,7 +286,7 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 	// Get stored client ID
 	clientID, err := config.GetStoredClientID()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get client ID: %v", err)
+		return nil, fmt.Errorf("failed to get client ID: %w", err)
 	}
 
 	// Validate required client configuration
@@ -286,13 +305,18 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 
 	// Detect cloud provider and get metadata
 	cloudDetector := services.NewCloudDetector()
-	detectedProvider := cloudDetector.DetectProvider(context.Background())
-	cloudMetadata := cloudDetector.GetMetadata(context.Background(), Cfg.Client.Cloud, detectedProvider)
+	cloudCtx, cloudCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cloudCancel()
+	detectedProvider := cloudDetector.DetectProvider(cloudCtx)
+	cloudMetadata := cloudDetector.GetMetadata(cloudCtx, Cfg.Client.Cloud, detectedProvider)
 
 	// Log detected cloud information
 	m.logger.Infof("Cloud detection - User defined: %s, Auto detected: %s", Cfg.Client.Cloud, detectedProvider)
 
-	hostname, _ := os.Hostname()
+	hostname, err := os.Hostname()
+	if err != nil {
+		m.logger.Debugf("failed to get hostname: %v", err)
+	}
 	clientInfo := &client.RegisterRequest{
 		ClientId:  clientID,
 		Token:     Cfg.Server.Token,
@@ -349,6 +373,7 @@ func (m *SessionManager) handleCommandStream(ctx context.Context) error {
 	streamDone := make(chan struct{})
 
 	go func() {
+		defer helper.RecoverPanic(m.logger, "stream-commands")
 		defer close(streamDone)
 		m.session.StreamCommands(ctx, errChan)
 	}()
@@ -402,7 +427,7 @@ func (s *ClientSession) Connect(ctx context.Context) error {
 
 	s.log.Info("Connecting to server...")
 	if err := s.grpcConn.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect to server: %v", err)
+		return fmt.Errorf("failed to connect to server: %w", err)
 	}
 
 	s.cmdClient = client.NewCommandServiceClient(s.grpcConn.GetConnection())
@@ -411,33 +436,34 @@ func (s *ClientSession) Connect(ctx context.Context) error {
 	resp, err := s.cmdClient.Register(ctx, s.clientInfo)
 	if err != nil {
 		s.grpcConn.Close()
-		return fmt.Errorf("registration failed: %v", err)
+		return fmt.Errorf("registration failed: %w", err)
 	}
 
 	if !resp.Success {
 		s.grpcConn.Close()
-		s.log.Error(resp.Error)
-		os.Exit(1)
+		s.log.Errorf("Registration rejected by server: %s", resp.Error)
+		return fmt.Errorf("%w: %s", ErrFatalRegistration, resp.Error)
 	}
 
 	if resp.SessionToken == "" {
 		s.grpcConn.Close()
-		s.log.Error("invalid response from server: empty session token")
-		os.Exit(1)
+		s.log.Error("Invalid response from server: empty session token")
+		return fmt.Errorf("%w: empty session token", ErrFatalRegistration)
 	}
 
 	s.sessionToken = resp.SessionToken
 	s.isConnected = true
-	s.log.Infof("Registration successful! Session token: %s", s.sessionToken)
-	s.log.Debugf("Server response details: %+v", resp)
+	s.log.Info("Registration successful!")
+	s.log.Debugf("Server response: success=%t", resp.Success)
 
 	// Initialize and start heartbeat service after successful connection
 	if s.heartbeat != nil {
-		// Initialize heartbeat with dedicated connection
+		// Stop any existing heartbeat goroutines before re-initializing
+		s.heartbeat.Stop()
+
 		if err := s.heartbeat.Initialize(s.clientInfo.ClientId); err != nil {
 			s.log.Warnf("Failed to initialize heartbeat service: %v", err)
 		} else {
-			// Start heartbeat service
 			if err := s.heartbeat.Start(); err != nil {
 				s.log.Warnf("Failed to start heartbeat service: %v", err)
 			}
@@ -473,15 +499,21 @@ func (s *ClientSession) TriggerReconnect() {
 
 // StreamCommands handles the command stream from the server
 func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error) {
-	s.Lock()
-	if !s.isConnected || s.sessionToken == "" {
-		s.Unlock()
+	var currentSessionToken string
+	var currentClientID string
+	func() {
+		s.Lock()
+		defer s.Unlock()
+		if !s.isConnected || s.sessionToken == "" {
+			return
+		}
+		currentSessionToken = s.sessionToken
+		currentClientID = s.clientInfo.ClientId
+	}()
+	if currentSessionToken == "" {
 		errChan <- fmt.Errorf("client is not connected or session token is missing")
 		return
 	}
-	currentSessionToken := s.sessionToken
-	currentClientID := s.clientInfo.ClientId
-	s.Unlock()
 
 	// Create stream with retry mechanism (context-aware)
 	var stream client.CommandService_CommandStreamClient
@@ -514,7 +546,7 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 	}
 
 	if err != nil {
-		errChan <- fmt.Errorf("failed to start command stream after %d attempts: %v", maxRetries, err)
+		errChan <- fmt.Errorf("failed to start command stream after %d attempts: %w", maxRetries, err)
 		return
 	}
 
@@ -529,7 +561,7 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 		},
 	}
 
-	s.log.Debugf("Sending initial response with session token: %s", currentSessionToken)
+	s.log.Debug("Sending initial response")
 
 	// Send initial response with retry (context-aware)
 	for i := 0; i < maxRetries; i++ {
@@ -550,17 +582,18 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 	}
 
 	if err != nil {
-		errChan <- fmt.Errorf("failed to send initial response: %v", err)
+		errChan <- fmt.Errorf("failed to send initial response: %w", err)
 		return
 	}
 
-	s.log.Infof("Stream connection started (Client ID: %s, Session: %s)", currentClientID, currentSessionToken)
+	s.log.Infof("Stream connection started (Client ID: %s)", currentClientID)
 
 	// Health monitor done channel - signals health monitor to stop
 	healthDone := make(chan struct{})
 
 	// Create a goroutine to monitor stream health
 	go func() {
+		defer helper.RecoverPanic(s.log, "health-monitor")
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 
@@ -588,12 +621,12 @@ func (s *ClientSession) StreamCommands(ctx context.Context, errChan chan<- error
 	}()
 
 	// Start command handling - when this returns, signal health monitor to stop
-	s.handleCommands(ctx, stream, errChan)
+	s.handleCommands(ctx, stream, errChan, currentSessionToken)
 	close(healthDone)
 }
 
 // handleCommands processes incoming commands
-func (s *ClientSession) handleCommands(ctx context.Context, stream client.CommandService_CommandStreamClient, errChan chan<- error) {
+func (s *ClientSession) handleCommands(ctx context.Context, stream client.CommandService_CommandStreamClient, errChan chan<- error, sessionToken string) {
 	s.log.Info("Starting command processing loop")
 	defer s.log.Info("Command processing loop ended")
 
@@ -621,7 +654,7 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 			if strings.Contains(err.Error(), "session validation error") {
 				s.log.Error("Session validation error detected - this may be due to Kubernetes load balancing or session storage issues")
 			}
-			errChan <- fmt.Errorf("receive error: %v", err)
+			errChan <- fmt.Errorf("receive error: %w", err)
 			return
 		}
 
@@ -633,7 +666,7 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 		}).Info("Received command")
 
 		// Validate command
-		if !s.validateCommand(cmd) {
+		if !s.validateCommand(cmd, sessionToken) {
 			s.log.Error("Command validation failed")
 			if err := stream.Send(helper.NewErrorResponse(cmd, "Command validation failed")); err != nil {
 				s.log.Error(fmt.Sprintf("Failed to send error response: %v", err))
@@ -642,7 +675,7 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 		}
 
 		// Process command and send response
-		response := s.cmdManager.HandleCommand(cmd)
+		response := s.cmdManager.HandleCommand(ctx, cmd)
 		if response == nil {
 			s.log.Error("Received nil response from command handler")
 			if err := stream.Send(helper.NewErrorResponse(cmd, "Internal error: nil response")); err != nil {
@@ -653,16 +686,22 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 
 		// Set response metadata
 		response.CommandId = cmd.CommandId
-		response.Identity = &client.Identity{
-			ClientId:     cmd.Identity.ClientId,
-			SessionToken: s.sessionToken,
-			ClientName:   cmd.Identity.ClientName,
+		if cmd.Identity != nil {
+			response.Identity = &client.Identity{
+				ClientId:     cmd.Identity.ClientId,
+				SessionToken: sessionToken,
+				ClientName:   cmd.Identity.ClientName,
+			}
+		} else {
+			response.Identity = &client.Identity{
+				SessionToken: sessionToken,
+			}
 		}
 
 		// Send response
 		if err := stream.Send(response); err != nil {
 			s.log.Error(fmt.Sprintf("Failed to send response: %v", err))
-			errChan <- fmt.Errorf("send error: %v", err)
+			errChan <- fmt.Errorf("send error: %w", err)
 			return
 		}
 
@@ -675,17 +714,19 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 }
 
 // validateCommand validates the incoming command
-func (s *ClientSession) validateCommand(cmd *client.Command) bool {
-	s.RLock()
-	defer s.RUnlock()
+func (s *ClientSession) validateCommand(cmd *client.Command, sessionToken string) bool {
+	if cmd.Identity == nil {
+		s.log.Warn("Command identity is nil")
+		return false
+	}
 
 	if cmd.Identity.SessionToken == "" {
 		s.log.Warn("Command session token is empty")
 		return false
 	}
 
-	if cmd.Identity.SessionToken != s.sessionToken {
-		s.log.Warnf("Invalid session token received. Expected: %s, Received: %s", s.sessionToken, cmd.Identity.SessionToken)
+	if cmd.Identity.SessionToken != sessionToken {
+		s.log.Warn("Invalid session token received")
 		return false
 	}
 

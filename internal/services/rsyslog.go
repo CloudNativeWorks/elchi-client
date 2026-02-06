@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,20 +10,20 @@ import (
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
-func (s *Services) RsyslogService(cmd *client.Command) *client.CommandResponse {
+func (s *Services) RsyslogService(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	switch cmd.SubType {
 	case client.SubCommandType_UPDATE_RSYSLOG_CONFIG:
-		return s.UpdateRsyslogConfig(cmd)
+		return s.UpdateRsyslogConfig(ctx, cmd)
 	case client.SubCommandType_GET_RSYSLOG_CONFIG:
-		return s.GetRsyslogConfig(cmd)
+		return s.GetRsyslogConfig(ctx, cmd)
 	case client.SubCommandType_GET_RSYSLOG_STATUS:
-		return s.GetRsyslogStatus(cmd)
+		return s.GetRsyslogStatus(ctx, cmd)
 	case client.SubCommandType_SUB_START:
-		return s.RsyslogServiceAction(cmd, "start")
+		return s.RsyslogServiceAction(ctx, cmd, "start")
 	case client.SubCommandType_SUB_STOP:
-		return s.RsyslogServiceAction(cmd, "stop")
+		return s.RsyslogServiceAction(ctx, cmd, "stop")
 	case client.SubCommandType_SUB_RESTART:
-		return s.RsyslogServiceAction(cmd, "restart")
+		return s.RsyslogServiceAction(ctx, cmd, "restart")
 	case client.SubCommandType_SUB_LOGS:
 		return s.RsyslogServiceLogs(cmd)
 	}
@@ -30,26 +31,29 @@ func (s *Services) RsyslogService(cmd *client.Command) *client.CommandResponse {
 	return helper.NewErrorResponse(cmd, "invalid sub command")
 }
 
-func (s *Services) UpdateRsyslogConfig(cmd *client.Command) *client.CommandResponse {
+func (s *Services) UpdateRsyslogConfig(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	rsyslogReq := cmd.GetRsyslog()
 	if rsyslogReq == nil {
 		return helper.NewErrorResponse(cmd, "rsyslog request is nil")
 	}
 
 	// Update configuration
-	if err := rsyslog.UpdateConfig(rsyslogReq, s.logger, s.runner); err != nil {
+	if err := rsyslog.UpdateConfig(ctx, rsyslogReq, s.logger, s.runner); err != nil {
 		s.logger.Errorf("failed to update rsyslog config: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to update config: %v", err))
 	}
 
 	// Restart service to apply changes
-	if err := rsyslog.RestartService(s.logger, s.runner); err != nil {
+	if err := rsyslog.RestartService(ctx, s.logger, s.runner); err != nil {
 		s.logger.Errorf("failed to restart rsyslog: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("config updated but failed to restart service: %v", err))
 	}
 
 	// Get current status
-	status, _ := rsyslog.GetServiceStatus(s.logger, s.runner)
+	status, err := rsyslog.GetServiceStatus(ctx, s.logger, s.runner)
+	if err != nil {
+		s.logger.Debugf("failed to get rsyslog service status: %v", err)
+	}
 	statusMsg := "unknown"
 	if status != nil {
 		statusMsg = status.Active
@@ -70,14 +74,17 @@ func (s *Services) UpdateRsyslogConfig(cmd *client.Command) *client.CommandRespo
 	}
 }
 
-func (s *Services) GetRsyslogConfig(cmd *client.Command) *client.CommandResponse {
+func (s *Services) GetRsyslogConfig(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	config, err := rsyslog.GetCurrentConfig(s.logger)
 	if err != nil {
 		s.logger.Errorf("failed to get rsyslog config: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to get config: %v", err))
 	}
 
-	status, _ := rsyslog.GetServiceStatus(s.logger, s.runner)
+	status, statusErr := rsyslog.GetServiceStatus(ctx, s.logger, s.runner)
+	if statusErr != nil {
+		s.logger.Debugf("failed to get rsyslog service status: %v", statusErr)
+	}
 	statusMsg := "unknown"
 	if status != nil {
 		statusMsg = status.Active
@@ -98,8 +105,8 @@ func (s *Services) GetRsyslogConfig(cmd *client.Command) *client.CommandResponse
 	}
 }
 
-func (s *Services) GetRsyslogStatus(cmd *client.Command) *client.CommandResponse {
-	status, err := rsyslog.GetServiceStatus(s.logger, s.runner)
+func (s *Services) GetRsyslogStatus(ctx context.Context, cmd *client.Command) *client.CommandResponse {
+	status, err := rsyslog.GetServiceStatus(ctx, s.logger, s.runner)
 	if err != nil {
 		s.logger.Errorf("failed to get rsyslog status: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to get status: %v", err))
@@ -130,7 +137,7 @@ func (s *Services) GetRsyslogStatus(cmd *client.Command) *client.CommandResponse
 	}
 }
 
-func (s *Services) RsyslogServiceAction(cmd *client.Command, action string) *client.CommandResponse {
+func (s *Services) RsyslogServiceAction(ctx context.Context, cmd *client.Command, action string) *client.CommandResponse {
 	var subType client.SubCommandType
 
 	switch action {
@@ -145,7 +152,7 @@ func (s *Services) RsyslogServiceAction(cmd *client.Command, action string) *cli
 	}
 
 	// Use systemd.ServiceControl for consistency
-	status, err := rsyslog.ServiceControl("rsyslog", subType, s.logger, s.runner)
+	status, err := rsyslog.ServiceControl(ctx, "rsyslog", subType, s.logger, s.runner)
 	if err != nil {
 		s.logger.Errorf("failed to %s rsyslog: %v", action, err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to %s rsyslog: %v", action, err))

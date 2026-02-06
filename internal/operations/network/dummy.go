@@ -1,11 +1,13 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/cmdrunner"
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/files"
@@ -35,7 +37,7 @@ func SetupDummyInterface(filename, ifaceName, downstreamAddress string, port uin
 	// Step 3: Netplan config is written for restart durability only
 	// DO NOT apply netplan here - it causes network interruption
 	// The interface is already active via netlink for immediate use
-	
+
 	logger.Debugf("Interface %s created via netlink (runtime) + netplan config written (restart durability)", ifaceName)
 	return netplanPath, ifaceName, nil
 }
@@ -142,18 +144,19 @@ func SetupDummyInterfaceWithNetlink(ifaceName, downstreamAddress string, logger 
 		logger.Debugf("Interface %s final IP state: %v", ifaceName, finalIPs)
 	}
 
-	// Force systemd-networkd to reload its configuration without network interruption  
+	// Force systemd-networkd to reload its configuration without network interruption
 	// This makes systemd-networkd aware of the new netplan configuration
 	runner := cmdrunner.NewCommandsRunner()
-	if err := runner.RunWithS("networkctl", "reload"); err != nil {
+	reloadCtx, reloadCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer reloadCancel()
+	if err := runner.RunWithS(reloadCtx, "networkctl", "reload"); err != nil {
 		logger.Warnf("Failed to reload networkctl: %v", err)
 	} else {
 		logger.Debugf("Successfully reloaded networkctl configuration")
 	}
-	
+
 	return nil
 }
-
 
 // DeleteDummyInterface removes interface from both runtime (netlink) and persistent config (netplan)
 func DeleteDummyInterface(ifaceName string, logger *logger.Logger) error {
@@ -171,7 +174,7 @@ func DeleteDummyInterface(ifaceName string, logger *logger.Logger) error {
 	} else {
 		// Interface exists, delete it
 		logger.Debugf("Interface %s found, deleting it. Current state: UP=%v", ifaceName, link.Attrs().Flags&net.FlagUp != 0)
-		
+
 		// First, remove all IP addresses
 		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 		if err == nil && len(addrs) > 0 {
@@ -183,7 +186,7 @@ func DeleteDummyInterface(ifaceName string, logger *logger.Logger) error {
 				}
 			}
 		}
-		
+
 		if err := netlink.LinkSetDown(link); err != nil {
 			logger.Warnf("Failed to set interface down: %v", err)
 		} else {
@@ -195,7 +198,7 @@ func DeleteDummyInterface(ifaceName string, logger *logger.Logger) error {
 			return fmt.Errorf("failed to delete interface: %w", err)
 		}
 		logger.Debugf("Runtime interface %s deleted via netlink", ifaceName)
-		
+
 		// Verify deletion
 		_, verifyErr := netlink.LinkByName(ifaceName)
 		if verifyErr != nil && strings.Contains(verifyErr.Error(), "not found") {

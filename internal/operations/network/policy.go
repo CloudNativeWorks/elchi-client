@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	MinPolicyPriority = 100  // Elchi policies start from priority 100
-	MaxPolicyPriority = 999  // Elchi policies end at priority 999
+	MinPolicyPriority = 100 // Elchi policies start from priority 100
+	MaxPolicyPriority = 999 // Elchi policies end at priority 999
 )
 
 type PolicyManager struct {
@@ -42,15 +42,15 @@ func (pm *PolicyManager) ManagePolicies(operations []*client.RoutingPolicyOperat
 		switch op.Action {
 		case client.RoutingPolicyOperation_ADD:
 			if err := pm.addPolicy(op.Policy); err != nil {
-				return fmt.Errorf("failed to add policy: %v", err)
+				return fmt.Errorf("failed to add policy: %w", err)
 			}
 		case client.RoutingPolicyOperation_DELETE:
 			if err := pm.deletePolicy(op.Policy); err != nil {
-				return fmt.Errorf("failed to delete policy: %v", err)
+				return fmt.Errorf("failed to delete policy: %w", err)
 			}
 		case client.RoutingPolicyOperation_REPLACE:
 			if err := pm.replacePolicy(op.Policy); err != nil {
-				return fmt.Errorf("failed to replace policy: %v", err)
+				return fmt.Errorf("failed to replace policy: %w", err)
 			}
 		}
 	}
@@ -60,7 +60,7 @@ func (pm *PolicyManager) ManagePolicies(operations []*client.RoutingPolicyOperat
 
 // addPolicy adds a routing policy both to runtime and persistent config
 func (pm *PolicyManager) addPolicy(policy *client.RoutingPolicy) error {
-	pm.logger.Infof("Adding routing policy: from=%s, table=%d, priority=%d", 
+	pm.logger.Infof("Adding routing policy: from=%s, table=%d, priority=%d",
 		policy.From, policy.Table, policy.Priority)
 	pm.logger.Debugf("Policy details - To:%s, Interface:%s", policy.To, policy.Interface)
 
@@ -76,7 +76,7 @@ func (pm *PolicyManager) addPolicy(policy *client.RoutingPolicy) error {
 	pm.logger.Debug("Adding policy to runtime (netlink)")
 	if err := pm.addRuntimePolicy(policy); err != nil {
 		pm.logger.Debugf("Runtime policy addition failed: %v", err)
-		return fmt.Errorf("failed to add runtime policy: %v", err)
+		return fmt.Errorf("failed to add runtime policy: %w", err)
 	}
 	pm.logger.Debug("Runtime policy added successfully")
 
@@ -95,7 +95,7 @@ func (pm *PolicyManager) addPolicy(policy *client.RoutingPolicy) error {
 
 // deletePolicy removes a routing policy from runtime and persistent config
 func (pm *PolicyManager) deletePolicy(policy *client.RoutingPolicy) error {
-	pm.logger.Infof("Deleting routing policy: from=%s, table=%d, priority=%d", 
+	pm.logger.Infof("Deleting routing policy: from=%s, table=%d, priority=%d",
 		policy.From, policy.Table, policy.Priority)
 	pm.logger.Debugf("Policy details - To:%s, Interface:%s", policy.To, policy.Interface)
 
@@ -122,7 +122,7 @@ func (pm *PolicyManager) deletePolicy(policy *client.RoutingPolicy) error {
 
 // replacePolicy replaces an existing policy
 func (pm *PolicyManager) replacePolicy(policy *client.RoutingPolicy) error {
-	pm.logger.Infof("Replacing routing policy: from=%s, table=%d, priority=%d", 
+	pm.logger.Infof("Replacing routing policy: from=%s, table=%d, priority=%d",
 		policy.From, policy.Table, policy.Priority)
 	pm.logger.Debugf("Policy details - To:%s, Interface:%s", policy.To, policy.Interface)
 
@@ -147,7 +147,7 @@ func (pm *PolicyManager) addRuntimePolicy(policy *client.RoutingPolicy) error {
 	if policy.From != "" {
 		ip, src, err := net.ParseCIDR(policy.From)
 		if err != nil {
-			return fmt.Errorf("invalid source address %s: %v", policy.From, err)
+			return fmt.Errorf("invalid source address %s: %w", policy.From, err)
 		}
 		pm.logger.Debugf("Parsed source: Input=%s, IP=%s, Network=%s", policy.From, ip.String(), src.String())
 		rule.Src = src
@@ -156,7 +156,7 @@ func (pm *PolicyManager) addRuntimePolicy(policy *client.RoutingPolicy) error {
 	// Parse destination address
 	if policy.To != "" {
 		if _, dst, err := net.ParseCIDR(policy.To); err != nil {
-			return fmt.Errorf("invalid destination address %s: %v", policy.To, err)
+			return fmt.Errorf("invalid destination address %s: %w", policy.To, err)
 		} else {
 			rule.Dst = dst
 		}
@@ -165,7 +165,7 @@ func (pm *PolicyManager) addRuntimePolicy(policy *client.RoutingPolicy) error {
 	// Note: interface field is only used for netplan persistence, not for netlink rules
 
 	// Debug log rule details before adding
-	pm.logger.Debugf("Adding netlink rule: Priority=%d, Table=%d, Src=%v, Dst=%v", 
+	pm.logger.Debugf("Adding netlink rule: Priority=%d, Table=%d, Src=%v, Dst=%v",
 		rule.Priority, rule.Table, rule.Src, rule.Dst)
 
 	// Add rule to netlink (idempotent)
@@ -175,29 +175,29 @@ func (pm *PolicyManager) addRuntimePolicy(policy *client.RoutingPolicy) error {
 			pm.logger.Debug("Policy rule already exists, operation is idempotent")
 			return nil
 		}
-		
+
 		// Debug log for real errors
 		pm.logger.Debugf("netlink.RuleAdd failed with error: %T: %v", err, err)
-		pm.logger.Debugf("Failed rule details: Priority=%d, Table=%d, Family=%d", 
+		pm.logger.Debugf("Failed rule details: Priority=%d, Table=%d, Family=%d",
 			rule.Priority, rule.Table, rule.Family)
 		if rule.Src != nil {
-			pm.logger.Debugf("Failed rule Src: %s (IP=%s, Mask=%s, Bits=%d)", 
+			pm.logger.Debugf("Failed rule Src: %s (IP=%s, Mask=%s, Bits=%d)",
 				rule.Src.String(), rule.Src.IP.String(), rule.Src.Mask.String(), countBits(rule.Src.Mask))
 		}
 		if rule.Dst != nil {
-			pm.logger.Debugf("Failed rule Dst: %s (IP=%s, Mask=%s, Bits=%d)", 
+			pm.logger.Debugf("Failed rule Dst: %s (IP=%s, Mask=%s, Bits=%d)",
 				rule.Dst.String(), rule.Dst.IP.String(), rule.Dst.Mask.String(), countBits(rule.Dst.Mask))
 		}
-		
+
 		// Try to understand the system error
 		if errno, ok := err.(syscall.Errno); ok {
 			pm.logger.Debugf("Syscall error number: %d (%s)", errno, errno.Error())
 		}
-		
-		return fmt.Errorf("failed to add netlink rule: %v", err)
+
+		return fmt.Errorf("failed to add netlink rule: %w", err)
 	}
 
-	pm.logger.Infof("Successfully added policy: from=%s, table=%d, priority=%d", 
+	pm.logger.Infof("Successfully added policy: from=%s, table=%d, priority=%d",
 		policy.From, policy.Table, policy.Priority)
 	return nil
 }
@@ -213,7 +213,7 @@ func (pm *PolicyManager) deleteRuntimePolicy(policy *client.RoutingPolicy) error
 	// Parse source address
 	if policy.From != "" {
 		if _, src, err := net.ParseCIDR(policy.From); err != nil {
-			return fmt.Errorf("invalid source address %s: %v", policy.From, err)
+			return fmt.Errorf("invalid source address %s: %w", policy.From, err)
 		} else {
 			rule.Src = src
 		}
@@ -222,7 +222,7 @@ func (pm *PolicyManager) deleteRuntimePolicy(policy *client.RoutingPolicy) error
 	// Parse destination address
 	if policy.To != "" {
 		if _, dst, err := net.ParseCIDR(policy.To); err != nil {
-			return fmt.Errorf("invalid destination address %s: %v", policy.To, err)
+			return fmt.Errorf("invalid destination address %s: %w", policy.To, err)
 		} else {
 			rule.Dst = dst
 		}
@@ -237,10 +237,10 @@ func (pm *PolicyManager) deleteRuntimePolicy(policy *client.RoutingPolicy) error
 			pm.logger.Debug("Policy rule doesn't exist, operation is idempotent")
 			return nil
 		}
-		return fmt.Errorf("failed to delete netlink rule: %v", err)
+		return fmt.Errorf("failed to delete netlink rule: %w", err)
 	}
 
-	pm.logger.Infof("Successfully deleted policy: from=%s, table=%d, priority=%d", 
+	pm.logger.Infof("Successfully deleted policy: from=%s, table=%d, priority=%d",
 		policy.From, policy.Table, policy.Priority)
 	return nil
 }
@@ -264,13 +264,13 @@ func (pm *PolicyManager) validatePolicy(policy *client.RoutingPolicy) error {
 	// Validate IP addresses if provided
 	if policy.From != "" {
 		if _, _, err := net.ParseCIDR(policy.From); err != nil {
-			return fmt.Errorf("invalid source address %s: %v", policy.From, err)
+			return fmt.Errorf("invalid source address %s: %w", policy.From, err)
 		}
 	}
 
 	if policy.To != "" {
 		if _, _, err := net.ParseCIDR(policy.To); err != nil {
-			return fmt.Errorf("invalid destination address %s: %v", policy.To, err)
+			return fmt.Errorf("invalid destination address %s: %w", policy.To, err)
 		}
 	}
 
@@ -283,26 +283,26 @@ func (pm *PolicyManager) GetCurrentPolicies() ([]*client.RoutingPolicy, error) {
 	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
 	if err != nil {
 		pm.logger.Debugf("Failed to list netlink rules: %v", err)
-		return nil, fmt.Errorf("failed to list netlink rules: %v", err)
+		return nil, fmt.Errorf("failed to list netlink rules: %w", err)
 	}
 	pm.logger.Debugf("Found %d netlink rules total", len(rules))
 
 	var policies []*client.RoutingPolicy
-	
+
 	// Get interface mapping from netplan files
 	pm.logger.Debug("Building interface mapping from netplan files")
 	interfaceMap := pm.buildPolicyInterfaceMap()
 	pm.logger.Debugf("Built interface map with %d entries: %+v", len(interfaceMap), interfaceMap)
-	
+
 	for _, rule := range rules {
 		// Only include Elchi-managed policies (priority range 100-999)
 		if rule.Priority < MinPolicyPriority || rule.Priority > MaxPolicyPriority {
-			pm.logger.Debugf("Skipping rule with priority %d (outside Elchi range %d-%d)", 
+			pm.logger.Debugf("Skipping rule with priority %d (outside Elchi range %d-%d)",
 				rule.Priority, MinPolicyPriority, MaxPolicyPriority)
 			continue
 		}
 
-		pm.logger.Debugf("Processing Elchi rule: Priority=%d, Table=%d, Family=%d", 
+		pm.logger.Debugf("Processing Elchi rule: Priority=%d, Table=%d, Family=%d",
 			rule.Priority, rule.Table, rule.Family)
 
 		policy := &client.RoutingPolicy{
@@ -365,7 +365,7 @@ func PolicyManage(cmd *client.Command, logger *logger.Logger) *client.CommandRes
 	}
 
 	manager := NewPolicyManager(logger)
-	
+
 	if err := manager.ManagePolicies(networkReq.GetPolicyOperations()); err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("policy management failed: %v", err))
 	}
@@ -381,7 +381,7 @@ func PolicyManage(cmd *client.Command, logger *logger.Logger) *client.CommandRes
 // PolicyList handles SUB_POLICY_LIST command
 func PolicyList(cmd *client.Command, logger *logger.Logger) *client.CommandResponse {
 	manager := NewPolicyManager(logger)
-	
+
 	policies, err := manager.GetCurrentPolicies()
 	if err != nil {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to list policies: %v", err))
@@ -413,9 +413,9 @@ type NetplanPolicyConfig struct {
 }
 
 type NetplanPolicyNetwork struct {
-	Version   int                                `yaml:"version"`
-	Renderer  string                             `yaml:"renderer"`
-	Ethernets map[string]NetplanInterfaceConfig  `yaml:"ethernets,omitempty"`
+	Version   int                               `yaml:"version"`
+	Renderer  string                            `yaml:"renderer"`
+	Ethernets map[string]NetplanInterfaceConfig `yaml:"ethernets,omitempty"`
 }
 
 type NetplanInterfaceConfig struct {
@@ -433,12 +433,12 @@ type NetplanPolicyEntry struct {
 func (pm *PolicyManager) addPolicyToPersistentConfig(policy *client.RoutingPolicy) error {
 	// Use interface field from policy
 	interfaceName := policy.Interface
-	
+
 	if interfaceName == "" {
 		pm.logger.Debug("Policy has no interface specified for netplan persistence")
 		return fmt.Errorf("policy must specify interface for netplan persistence")
 	}
-	
+
 	pm.logger.Debugf("Using interface %s for netplan policy persistence", interfaceName)
 
 	policyFile := fmt.Sprintf("%s/99-elchi-policy-%s.yaml", models.NetplanPath, interfaceName)
@@ -487,9 +487,9 @@ func (pm *PolicyManager) addPolicyToPersistentConfig(policy *client.RoutingPolic
 	pm.logger.Debugf("Checking for duplicate policy in %d existing policies", len(ifConfig.RoutingPolicy))
 	for _, existingPolicy := range ifConfig.RoutingPolicy {
 		if existingPolicy.From == netplanPolicy.From &&
-		   existingPolicy.To == netplanPolicy.To &&
-		   existingPolicy.Table == netplanPolicy.Table &&
-		   existingPolicy.Priority == netplanPolicy.Priority {
+			existingPolicy.To == netplanPolicy.To &&
+			existingPolicy.Table == netplanPolicy.Table &&
+			existingPolicy.Priority == netplanPolicy.Priority {
 			pm.logger.Debug("Policy already exists in netplan, skipping")
 			return nil // Policy already exists
 		}
@@ -505,7 +505,7 @@ func (pm *PolicyManager) addPolicyToPersistentConfig(policy *client.RoutingPolic
 	pm.logger.Debug("Marshaling policy config to YAML")
 	data, err := yaml.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal policy config: %v", err)
+		return fmt.Errorf("failed to marshal policy config: %w", err)
 	}
 
 	// Use tee with sudo to write file directly as root (bypass ownership issues)
@@ -514,11 +514,11 @@ func (pm *PolicyManager) addPolicyToPersistentConfig(policy *client.RoutingPolic
 	cmd.Stdin = strings.NewReader(string(data))
 	if err := cmd.Run(); err != nil {
 		pm.logger.Debugf("Failed to write policy config: %v", err)
-		return fmt.Errorf("failed to write policy config via sudo tee: %v", err)
+		return fmt.Errorf("failed to write policy config via sudo tee: %w", err)
 	}
 	pm.logger.Debug("Policy config file written successfully")
 
-	// Set proper permissions  
+	// Set proper permissions
 	chmodCmd := exec.Command("sudo", "chmod", "0600", policyFile)
 	if err := chmodCmd.Run(); err != nil {
 		pm.logger.Warnf("Failed to set permissions for %s: %v", policyFile, err)
@@ -528,12 +528,11 @@ func (pm *PolicyManager) addPolicyToPersistentConfig(policy *client.RoutingPolic
 	return nil
 }
 
-
 // removePolicyFromPersistentConfig removes policy from netplan persistent configuration
 func (pm *PolicyManager) removePolicyFromPersistentConfig(policy *client.RoutingPolicy) error {
 	// Use interface field from policy
 	interfaceName := policy.Interface
-	
+
 	if interfaceName == "" {
 		pm.logger.Debug("Policy has no interface specified for netplan removal")
 		return fmt.Errorf("policy must specify interface for netplan removal")
@@ -559,7 +558,7 @@ func (pm *PolicyManager) removePolicyFromPersistentConfig(policy *client.Routing
 		pm.logger.Debug("Loading existing policy file for removal")
 		if err := yaml.Unmarshal(data, config); err != nil {
 			pm.logger.Debugf("Failed to parse policy file: %v", err)
-			return fmt.Errorf("failed to parse existing policy config: %v", err)
+			return fmt.Errorf("failed to parse existing policy config: %w", err)
 		}
 	}
 
@@ -576,9 +575,9 @@ func (pm *PolicyManager) removePolicyFromPersistentConfig(policy *client.Routing
 	removedCount := 0
 	for _, existingPolicy := range ifConfig.RoutingPolicy {
 		if existingPolicy.From == policy.From &&
-		   existingPolicy.To == policy.To &&
-		   existingPolicy.Table == int(policy.Table) &&
-		   existingPolicy.Priority == int(policy.Priority) {
+			existingPolicy.To == policy.To &&
+			existingPolicy.Table == int(policy.Table) &&
+			existingPolicy.Priority == int(policy.Priority) {
 			pm.logger.Debug("Found matching policy to remove")
 			removedCount++
 			continue // Skip this policy (remove it)
@@ -594,13 +593,13 @@ func (pm *PolicyManager) removePolicyFromPersistentConfig(policy *client.Routing
 		// Remove interface config if no policies left
 		pm.logger.Debug("No policies left, removing interface config")
 		delete(config.Network.Ethernets, interfaceName)
-		
+
 		// If no interfaces left, remove the entire file
 		if len(config.Network.Ethernets) == 0 {
 			pm.logger.Debug("No interfaces left, removing entire policy file")
 			if err := os.Remove(policyFile); err != nil && !os.IsNotExist(err) {
 				pm.logger.Debugf("Failed to remove policy file: %v", err)
-				return fmt.Errorf("failed to remove empty policy config: %v", err)
+				return fmt.Errorf("failed to remove empty policy config: %w", err)
 			}
 			pm.logger.Infof("Removed empty policy config file %s", policyFile)
 			return nil
@@ -614,7 +613,7 @@ func (pm *PolicyManager) removePolicyFromPersistentConfig(policy *client.Routing
 	// Write back to file
 	data, err := yaml.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("failed to marshal policy config: %v", err)
+		return fmt.Errorf("failed to marshal policy config: %w", err)
 	}
 
 	// Use tee with sudo to write file directly as root (bypass ownership issues)
@@ -623,11 +622,11 @@ func (pm *PolicyManager) removePolicyFromPersistentConfig(policy *client.Routing
 	cmd.Stdin = strings.NewReader(string(data))
 	if err := cmd.Run(); err != nil {
 		pm.logger.Debugf("Failed to write updated policy config: %v", err)
-		return fmt.Errorf("failed to write policy config via sudo tee: %v", err)
+		return fmt.Errorf("failed to write policy config via sudo tee: %w", err)
 	}
 	pm.logger.Debug("Updated policy config file written successfully")
 
-	// Set proper permissions  
+	// Set proper permissions
 	chmodCmd := exec.Command("sudo", "chmod", "0600", policyFile)
 	if err := chmodCmd.Run(); err != nil {
 		pm.logger.Warnf("Failed to set permissions for %s: %v", policyFile, err)
@@ -640,7 +639,7 @@ func (pm *PolicyManager) removePolicyFromPersistentConfig(policy *client.Routing
 // buildPolicyInterfaceMap builds a map of policies to interfaces from netplan files
 func (pm *PolicyManager) buildPolicyInterfaceMap() map[string]string {
 	interfaceMap := make(map[string]string)
-	
+
 	// Scan netplan policy files (99-elchi-policy-*.yaml)
 	pm.logger.Debugf("Scanning netplan directory: %s", models.NetplanPath)
 	files, err := os.ReadDir(models.NetplanPath)
@@ -649,22 +648,22 @@ func (pm *PolicyManager) buildPolicyInterfaceMap() map[string]string {
 		return interfaceMap
 	}
 	pm.logger.Debugf("Found %d files in netplan directory", len(files))
-	
+
 	for _, file := range files {
 		if !strings.HasPrefix(file.Name(), "99-elchi-policy-") || !strings.HasSuffix(file.Name(), ".yaml") {
 			pm.logger.Debugf("Skipping non-policy file: %s", file.Name())
 			continue
 		}
-		
+
 		// Extract interface name from filename: 99-elchi-policy-eth0.yaml -> eth0
 		interfaceName := strings.TrimPrefix(file.Name(), "99-elchi-policy-")
 		interfaceName = strings.TrimSuffix(interfaceName, ".yaml")
 		pm.logger.Debugf("Processing policy file for interface: %s", interfaceName)
-		
+
 		filePath := filepath.Join(models.NetplanPath, file.Name())
 		pm.parsePolicyFile(filePath, interfaceName, interfaceMap)
 	}
-	
+
 	pm.logger.Debugf("Built interface map with %d entries", len(interfaceMap))
 	return interfaceMap
 }
@@ -677,13 +676,13 @@ func (pm *PolicyManager) parsePolicyFile(filePath, interfaceName string, interfa
 		pm.logger.Warnf("Failed to read policy file %s: %v", filePath, err)
 		return
 	}
-	
+
 	var config NetplanPolicyConfig
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		pm.logger.Warnf("Failed to parse policy file %s: %v", filePath, err)
 		return
 	}
-	
+
 	// Extract policies for this interface
 	if ifConfig, exists := config.Network.Ethernets[interfaceName]; exists {
 		pm.logger.Debugf("Found %d policies for interface %s", len(ifConfig.RoutingPolicy), interfaceName)

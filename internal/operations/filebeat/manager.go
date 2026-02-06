@@ -1,6 +1,7 @@
 package filebeat
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -54,13 +55,13 @@ type LogstashOutputConfig struct {
 
 // ElasticsearchOutputConfig represents elasticsearch output configuration
 type ElasticsearchOutputConfig struct {
-	Hosts              []string `yaml:"hosts"`
-	Index              string   `yaml:"index,omitempty"`              // Index pattern (e.g., "elchi-%{+yyyy.MM.dd}")
-	Loadbalance        bool     `yaml:"loadbalance,omitempty"`
+	Hosts               []string `yaml:"hosts"`
+	Index               string   `yaml:"index,omitempty"` // Index pattern (e.g., "elchi-%{+yyyy.MM.dd}")
+	Loadbalance         bool     `yaml:"loadbalance,omitempty"`
 	SSLVerificationMode string   `yaml:"ssl.verification_mode,omitempty"` // "none" to skip SSL verify
-	APIKey             string   `yaml:"api_key,omitempty"`
-	Username           string   `yaml:"username,omitempty"`
-	Password           string   `yaml:"password,omitempty"`
+	APIKey              string   `yaml:"api_key,omitempty"`
+	Username            string   `yaml:"username,omitempty"`
+	Password            string   `yaml:"password,omitempty"`
 }
 
 // GetCurrentConfig reads the current filebeat configuration
@@ -176,7 +177,7 @@ func GetCurrentConfig(logger *logger.Logger) (*client.RequestFilebeat, error) {
 }
 
 // UpdateConfig writes new filebeat configuration
-func UpdateConfig(config *client.RequestFilebeat, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+func UpdateConfig(ctx context.Context, config *client.RequestFilebeat, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
 	// Build YAML config
 	filebeatConfig := FilebeatConfig{
 		FilebeatInputs: make([]FilebeatInputConfig, 0),
@@ -265,7 +266,7 @@ func UpdateConfig(config *client.RequestFilebeat, logger *logger.Logger, runner 
 	}
 
 	// Write config directly without backup
-	cmd := runner.SetCommandWithS("tee", filebeatConfigPath)
+	cmd := runner.SetCommandWithS(ctx, "tee", filebeatConfigPath)
 	cmd.Stdin = strings.NewReader(string(data))
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -273,7 +274,7 @@ func UpdateConfig(config *client.RequestFilebeat, logger *logger.Logger, runner 
 	}
 
 	// Set proper permissions
-	chmodCmd := runner.SetCommandWithS("chmod", "644", filebeatConfigPath)
+	chmodCmd := runner.SetCommandWithS(ctx, "chmod", "644", filebeatConfigPath)
 	if err := chmodCmd.Run(); err != nil {
 		logger.Warnf("Failed to set permissions: %v", err)
 	}
@@ -282,7 +283,7 @@ func UpdateConfig(config *client.RequestFilebeat, logger *logger.Logger, runner 
 
 	// Restart filebeat service to apply changes
 	logger.Infof("Restarting filebeat service to apply configuration changes...")
-	if err := RestartService(logger, runner); err != nil {
+	if err := RestartService(ctx, logger, runner); err != nil {
 		return fmt.Errorf("config updated but failed to restart service: %w", err)
 	}
 
@@ -290,18 +291,18 @@ func UpdateConfig(config *client.RequestFilebeat, logger *logger.Logger, runner 
 }
 
 // GetServiceStatus returns the current filebeat service status using systemd package
-func GetServiceStatus(logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
-	return systemd.GetServiceStatus(filebeatService, logger, runner)
+func GetServiceStatus(ctx context.Context, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
+	return systemd.GetServiceStatus(ctx, filebeatService, logger, runner)
 }
 
 // ServiceControl performs service control operations (start/stop/restart/status)
-func ServiceControl(serviceName string, action client.SubCommandType, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
-	return systemd.ServiceControl(serviceName, action, logger, runner)
+func ServiceControl(ctx context.Context, serviceName string, action client.SubCommandType, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (*client.ServiceStatus, error) {
+	return systemd.ServiceControl(ctx, serviceName, action, logger, runner)
 }
 
 // RestartService restarts the filebeat service
-func RestartService(logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
-	_, err := systemd.ServiceControl(filebeatService, client.SubCommandType_SUB_RESTART, logger, runner)
+func RestartService(ctx context.Context, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+	_, err := systemd.ServiceControl(ctx, filebeatService, client.SubCommandType_SUB_RESTART, logger, runner)
 	if err != nil {
 		return fmt.Errorf("failed to restart filebeat: %w", err)
 	}

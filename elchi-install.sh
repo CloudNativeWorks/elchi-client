@@ -1149,6 +1149,7 @@ server:
   host: "$SERVER_HOST"
   port: $SERVER_PORT
   tls: $SERVER_TLS
+  insecure_skip_verify: true
   token: "$SERVER_TOKEN"
   timeout: "30s"
 
