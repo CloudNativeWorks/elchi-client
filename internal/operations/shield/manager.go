@@ -1,7 +1,14 @@
 // Package shield reconciles elchi-shield's watched config directory on the edge
 // host to a control-plane-supplied desired state. elchi-shield self-watches that
 // directory (fsnotify + debounce + atomic hot-reload + last-good), so the agent
-// only needs to land files atomically — it never signals shield to reload.
+// only lands files atomically — it never signals shield to reload.
+//
+// Sync is two-phase to keep shield's view consistent. PREPARE validates every file
+// and stages it into a sibling temp file (".tmp", which shield's loader ignores by
+// extension) — slow work like downloads happens here, touching no live file, so any
+// error aborts with the directory unchanged. COMMIT then renames the staged temps
+// into place in a fast burst that shield's debounce coalesces into a single reload
+// of the final state.
 package shield
 
 import (
@@ -16,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	"github.com/CloudNativeWorks/elchi-client/pkg/models"
@@ -26,15 +34,31 @@ const (
 	dirMode         os.FileMode = 0o750
 	defaultFileMode os.FileMode = 0o600
 	tmpSuffix                   = ".tmp"
+
+	// downloadTimeout bounds a single artifact fetch so a hung URL can't stall the
+	// (sequential) command stream; maxDownloadBytes caps it so a runaway/huge URL
+	// can't fill the edge host's disk.
+	downloadTimeout  = 2 * time.Minute
+	maxDownloadBytes = 512 << 20 // 512 MiB per downloaded artifact
 )
 
+// staged is a file prepared during phase 1: its content is validated and written to
+// tmp, ready to be atomically renamed onto abs in phase 2. skip marks a file already
+// correct on disk (only its mode is reconciled, no rename).
+type staged struct {
+	rel  string
+	abs  string
+	tmp  string
+	mode os.FileMode
+	skip bool
+}
+
 // SyncConfig reconciles shield's watched config directory (models.ShieldConfigPath)
-// to match cfg. Every file in cfg.Files is written atomically (temp + rename); when
-// cfg.FullSync is set, any managed file NOT in the set is removed so deletions
-// propagate. Writes are idempotent: a file whose on-disk sha256 already matches is
-// left untouched. Returns an error if any file fails integrity/IO; on error the
-// directory is left in a partially-applied state, but shield's last-good config
-// keeps serving until a clean bundle lands.
+// to match cfg. See the package doc for the two-phase model. On full_sync it also
+// removes any managed file not in the set (deletions propagate). On a prepare-phase
+// error the directory is left unchanged; a commit-phase error (rare — only a
+// catastrophic rename failure) may leave earlier files applied, with the rest rolled
+// back, and is reported.
 func SyncConfig(ctx context.Context, cfg *client.ShieldConfig, log *logger.Logger) error {
 	return syncInto(ctx, models.ShieldConfigPath, cfg, log)
 }
@@ -48,20 +72,70 @@ func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *l
 		return fmt.Errorf("create shield config dir %q: %w", root, err)
 	}
 
+	// Phase 1 — PREPARE: validate + stage every file. No live file is touched.
+	plan := make([]staged, 0, len(cfg.GetFiles()))
 	kept := make(map[string]struct{}, len(cfg.GetFiles()))
+	cleanupStaged := func() {
+		for _, s := range plan {
+			if s.tmp != "" {
+				_ = os.Remove(s.tmp)
+			}
+		}
+	}
+
 	for _, f := range cfg.GetFiles() {
 		rel, err := safeRel(f.GetPath())
 		if err != nil {
+			cleanupStaged()
 			return err
 		}
-		abs := filepath.Join(root, rel)
-		if err := os.MkdirAll(filepath.Dir(abs), dirMode); err != nil {
-			return fmt.Errorf("create dir for %q: %w", rel, err)
-		}
-		if err := writeOne(ctx, f, abs); err != nil {
-			return fmt.Errorf("sync %q: %w", rel, err)
+		if _, dup := kept[rel]; dup {
+			cleanupStaged()
+			return fmt.Errorf("duplicate file path in bundle: %q", rel)
 		}
 		kept[rel] = struct{}{}
+
+		abs := filepath.Join(root, rel)
+		mode := fileMode(f.GetMode())
+		want := strings.ToLower(strings.TrimSpace(f.GetSha256()))
+
+		// Idempotency: identical content already on disk → reconcile mode at commit.
+		if want != "" {
+			if cur, err := fileSHA256(abs); err == nil && cur == want {
+				plan = append(plan, staged{rel: rel, abs: abs, mode: mode, skip: true})
+				continue
+			}
+		}
+
+		if err := os.MkdirAll(filepath.Dir(abs), dirMode); err != nil {
+			cleanupStaged()
+			return fmt.Errorf("create dir for %q: %w", rel, err)
+		}
+		tmp := abs + tmpSuffix
+		if err := prepareFile(ctx, f, tmp, want, mode); err != nil {
+			_ = os.Remove(tmp)
+			cleanupStaged()
+			return fmt.Errorf("prepare %q: %w", rel, err)
+		}
+		plan = append(plan, staged{rel: rel, abs: abs, tmp: tmp, mode: mode})
+	}
+
+	// Phase 2 — COMMIT: fast renames; shield's debounce coalesces the burst.
+	for i, s := range plan {
+		if s.skip {
+			_ = os.Chmod(s.abs, s.mode)
+			continue
+		}
+		if err := os.Rename(s.tmp, s.abs); err != nil {
+			// Roll back the not-yet-committed staged temps (already-renamed files
+			// stay live — rename is not reversible — but each is individually valid).
+			for _, rest := range plan[i:] {
+				if rest.tmp != "" {
+					_ = os.Remove(rest.tmp)
+				}
+			}
+			return fmt.Errorf("commit %q: %w", s.rel, err)
+		}
 	}
 
 	if cfg.GetFullSync() {
@@ -72,20 +146,11 @@ func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *l
 	return nil
 }
 
-// writeOne lands a single bundle file at abs. It is idempotent (skips when the
-// on-disk sha256 already matches), verifies integrity against f.sha256, and writes
-// atomically via a temp file + rename so shield never reads a half-written file.
-func writeOne(ctx context.Context, f *client.ShieldFile, abs string) error {
-	mode := fileMode(f.GetMode())
-	want := f.GetSha256()
-
-	// Idempotency: if the file already has the wanted content, just fix the mode.
-	if want != "" {
-		if cur, err := fileSHA256(abs); err == nil && cur == want {
-			return os.Chmod(abs, mode)
-		}
-	}
-
+// prepareFile validates f's content and writes it to tmp (with mode), without
+// touching the live destination. Inline content is hash-checked when a sha256 is
+// given; downloads REQUIRE a sha256 (the fetch is otherwise unverified) and are
+// bounded by downloadTimeout/maxDownloadBytes.
+func prepareFile(ctx context.Context, f *client.ShieldFile, tmp, want string, mode os.FileMode) error {
 	switch src := f.GetSource().(type) {
 	case *client.ShieldFile_Inline:
 		content := src.Inline
@@ -94,42 +159,37 @@ func writeOne(ctx context.Context, f *client.ShieldFile, abs string) error {
 				return fmt.Errorf("sha256 mismatch (inline): got %s want %s", got, want)
 			}
 		}
-		return atomicWrite(abs, content, mode)
+		if err := os.WriteFile(tmp, content, mode); err != nil {
+			return err
+		}
+		// Force the exact mode: os.WriteFile honors the umask (and skips the mode
+		// entirely if tmp already existed), so chmod to apply the requested perms.
+		return os.Chmod(tmp, mode)
 
 	case *client.ShieldFile_Download:
-		tmp := abs + tmpSuffix
+		if want == "" {
+			return fmt.Errorf("download requires a sha256 for integrity verification")
+		}
 		if err := downloadTo(ctx, src.Download.GetUrl(), tmp); err != nil {
 			return err
 		}
-		if want != "" {
-			got, err := fileSHA256(tmp)
-			if err != nil {
-				_ = os.Remove(tmp)
-				return err
-			}
-			if got != want {
-				_ = os.Remove(tmp)
-				return fmt.Errorf("sha256 mismatch (download): got %s want %s", got, want)
-			}
-		}
-		if err := os.Chmod(tmp, mode); err != nil {
-			_ = os.Remove(tmp)
+		got, err := fileSHA256(tmp)
+		if err != nil {
 			return err
 		}
-		if err := os.Rename(tmp, abs); err != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("install downloaded file: %w", err)
+		if got != want {
+			return fmt.Errorf("sha256 mismatch (download): got %s want %s", got, want)
 		}
-		return nil
+		return os.Chmod(tmp, mode)
 
 	default:
 		return fmt.Errorf("no content source")
 	}
 }
 
-// ListConfig returns the files currently under shield's config dir (path relative
-// to the root, sha256, and octal mode); content is intentionally omitted. A
-// missing directory yields an empty list (not an error).
+// ListConfig returns the files currently under shield's config dir (path relative to
+// the root, sha256, octal mode); content is omitted. A missing dir yields an empty
+// list (not an error).
 func ListConfig(_ *logger.Logger) ([]*client.ShieldFile, error) {
 	return listIn(models.ShieldConfigPath)
 }
@@ -168,9 +228,9 @@ func listIn(root string) ([]*client.ShieldFile, error) {
 	return out, nil
 }
 
-// pruneUnmanaged removes any file under root whose relative path is not in kept
-// (and any leftover temp file), then prunes emptied subdirectories. It only ever
-// operates under root.
+// pruneUnmanaged removes every file under root whose relative path is not in kept
+// (this also sweeps stray ".tmp" files from a crashed run), then prunes emptied
+// subdirectories. It only ever operates under root.
 func pruneUnmanaged(root string, kept map[string]struct{}, log *logger.Logger) error {
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -183,8 +243,8 @@ func pruneUnmanaged(root string, kept map[string]struct{}, log *logger.Logger) e
 		if err != nil {
 			return err
 		}
-		if _, ok := kept[rel]; ok && !strings.HasSuffix(rel, tmpSuffix) {
-			return nil
+		if _, ok := kept[rel]; ok {
+			return nil // managed file — keep regardless of its name/extension
 		}
 		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
 			return fmt.Errorf("remove stale file %q: %w", rel, rerr)
@@ -208,7 +268,7 @@ func pruneEmptyDirs(root string) {
 		}
 		return nil
 	})
-	// Remove deepest-first so parents become empty after their children go.
+	// Deepest-first so a parent becomes empty after its children are removed.
 	for i := len(dirs) - 1; i >= 0; i-- {
 		if entries, err := os.ReadDir(dirs[i]); err == nil && len(entries) == 0 {
 			_ = os.Remove(dirs[i])
@@ -217,8 +277,7 @@ func pruneEmptyDirs(root string) {
 }
 
 // safeRel validates a bundle file path and returns it cleaned, relative to the
-// config root. It rejects empty paths, absolute paths, and any traversal that
-// would escape the root.
+// config root. It rejects empty/absolute paths and any traversal that escapes root.
 func safeRel(p string) (string, error) {
 	if strings.TrimSpace(p) == "" {
 		return "", fmt.Errorf("empty file path")
@@ -233,24 +292,10 @@ func safeRel(p string) (string, error) {
 	return clean, nil
 }
 
-func atomicWrite(abs string, content []byte, mode os.FileMode) error {
-	tmp := abs + tmpSuffix
-	if err := os.WriteFile(tmp, content, mode); err != nil {
-		return err
-	}
-	// WriteFile honors mode only when creating; force it in case tmp pre-existed.
-	if err := os.Chmod(tmp, mode); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, abs); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("install file: %w", err)
-	}
-	return nil
-}
-
 func downloadTo(ctx context.Context, url, dst string) error {
+	ctx, cancel := context.WithTimeout(ctx, downloadTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -263,24 +308,41 @@ func downloadTo(ctx context.Context, url, dst string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: status %d", url, resp.StatusCode)
 	}
+
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = out.Close() }()
-	if _, err := io.Copy(out, resp.Body); err != nil {
+
+	// Cap the copy so a runaway artifact can't fill the disk (read one extra byte to
+	// detect an over-limit body).
+	n, err := io.Copy(out, io.LimitReader(resp.Body, maxDownloadBytes+1))
+	if err != nil {
 		_ = os.Remove(dst)
 		return fmt.Errorf("download %s: %w", url, err)
+	}
+	if n > maxDownloadBytes {
+		_ = os.Remove(dst)
+		return fmt.Errorf("download %s exceeds %d bytes", url, maxDownloadBytes)
 	}
 	return nil
 }
 
+// fileMode parses an octal mode string (e.g. "0640"), masking to permission bits so
+// a stray setuid/setgid/sticky or out-of-range value can't be applied. Empty or
+// unparseable input falls back to defaultFileMode (0600).
 func fileMode(s string) os.FileMode {
+	s = strings.TrimSpace(s)
 	if s == "" {
 		return defaultFileMode
 	}
-	if v, err := strconv.ParseUint(s, 8, 32); err == nil && v != 0 {
-		return os.FileMode(v)
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil {
+		return defaultFileMode
+	}
+	if m := os.FileMode(v) & os.ModePerm; m != 0 {
+		return m
 	}
 	return defaultFileMode
 }
@@ -290,10 +352,17 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// fileSHA256 streams the file through the hasher so a large artifact (e.g. a GeoIP
+// .mmdb) isn't read wholly into memory.
 func fileSHA256(path string) (string, error) {
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	return sha256Hex(b), nil
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

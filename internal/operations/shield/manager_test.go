@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,18 +59,11 @@ func TestSyncWritesFilesAndModes(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(root, "api-public.yaml")); fi.Mode().Perm() != 0o640 {
 		t.Fatalf("policy mode = %v, want 0640", fi.Mode().Perm())
 	}
-	// nested file created, default mode 0600
 	nf := filepath.Join(root, "feeds", "spamhaus.json")
 	if fi, err := os.Stat(nf); err != nil || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("nested file mode = %v err=%v, want 0600", fi, err)
 	}
-	// no leftover temp files
-	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
-		if filepath.Ext(p) == ".tmp" {
-			t.Fatalf("leftover temp file: %s", p)
-		}
-		return nil
-	})
+	assertNoTempFiles(t, root)
 }
 
 func TestFullSyncDeletesUnmanaged(t *testing.T) {
@@ -81,7 +76,6 @@ func TestFullSyncDeletesUnmanaged(t *testing.T) {
 	if err := syncInto(context.Background(), root, first, log); err != nil {
 		t.Fatal(err)
 	}
-	// second bundle drops a.yaml and feeds/x.json, adds b.yaml
 	second := &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
 		inlineFile("b.yaml", []byte("b"), ""),
 	}}
@@ -107,7 +101,6 @@ func TestNoFullSyncKeepsUnmanaged(t *testing.T) {
 	}}, log); err != nil {
 		t.Fatal(err)
 	}
-	// upsert (full_sync=false) must not delete keep.yaml
 	if err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: false, Files: []*client.ShieldFile{
 		inlineFile("new.yaml", []byte("new"), ""),
 	}}, log); err != nil {
@@ -115,6 +108,40 @@ func TestNoFullSyncKeepsUnmanaged(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "keep.yaml")); err != nil {
 		t.Fatalf("keep.yaml should survive a non-full-sync: %v", err)
+	}
+}
+
+// TestManagedTmpNameKept guards the prune bug where a managed file whose name ends
+// in ".tmp" was deleted by its own full-sync pass.
+func TestManagedTmpNameKept(t *testing.T) {
+	root := t.TempDir()
+	cfg := &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
+		inlineFile("notes.tmp", []byte("keep me"), ""),
+	}}
+	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notes.tmp")); err != nil {
+		t.Fatalf("a managed .tmp-named file must not be pruned: %v", err)
+	}
+}
+
+// TestEmptyFullSyncWipes pins the (intended-but-drastic) behavior that full_sync
+// with no files clears the directory.
+func TestEmptyFullSyncWipes(t *testing.T) {
+	root := t.TempDir()
+	log := testLogger()
+	if err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
+		inlineFile("a.yaml", []byte("a"), ""),
+	}}, log); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true}, log); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(root)
+	if len(entries) != 0 {
+		t.Fatalf("empty full_sync should wipe the dir, found %d entries", len(entries))
 	}
 }
 
@@ -133,6 +160,26 @@ func TestSha256MismatchErrors(t *testing.T) {
 	}
 }
 
+// TestPartialFailureLeavesNoLiveChange verifies the two-phase guarantee: if any
+// file in the bundle fails to prepare, NONE of the bundle is committed.
+func TestPartialFailureLeavesNoLiveChange(t *testing.T) {
+	root := t.TempDir()
+	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{
+		inlineFile("good1.yaml", []byte("g1"), ""),
+		inlineFile("good2.yaml", []byte("g2"), ""),
+		{Path: "bad.yaml", Source: &client.ShieldFile_Inline{Inline: []byte("real")}, Sha256: sum([]byte("nope"))},
+	}}
+	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+		t.Fatal("expected error")
+	}
+	for _, f := range []string{"good1.yaml", "good2.yaml", "bad.yaml"} {
+		if _, err := os.Stat(filepath.Join(root, f)); !os.IsNotExist(err) {
+			t.Fatalf("%s must not be committed when a sibling fails", f)
+		}
+	}
+	assertNoTempFiles(t, root)
+}
+
 func TestIdempotentSkip(t *testing.T) {
 	root := t.TempDir()
 	log := testLogger()
@@ -142,7 +189,6 @@ func TestIdempotentSkip(t *testing.T) {
 	}
 	p := filepath.Join(root, "a.yaml")
 	fi1, _ := os.Stat(p)
-	// second identical sync must not rewrite (mtime unchanged)
 	if err := syncInto(context.Background(), root, cfg, log); err != nil {
 		t.Fatal(err)
 	}
@@ -159,6 +205,94 @@ func TestRejectsPathTraversal(t *testing.T) {
 		if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
 			t.Fatalf("path %q should be rejected", bad)
 		}
+	}
+}
+
+func TestRejectsDuplicatePath(t *testing.T) {
+	root := t.TempDir()
+	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{
+		inlineFile("a.yaml", []byte("1"), ""),
+		inlineFile("a.yaml", []byte("2"), ""),
+	}}
+	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+		t.Fatal("duplicate path should be rejected")
+	}
+}
+
+func TestModeMasking(t *testing.T) {
+	root := t.TempDir()
+	// setuid/setgid/sticky bits must be stripped; garbage falls back to default.
+	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{
+		inlineFile("setuid.yaml", []byte("a"), "07777"),     // -> 0777, no setuid
+		inlineFile("garbage.yaml", []byte("b"), "abc"),      // -> default 0600
+		inlineFile("overflow.yaml", []byte("c"), "1000000"), // perm bits 0 -> default 0600
+	}}
+	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Join(root, "setuid.yaml")); fi.Mode()&os.ModeSetuid != 0 || fi.Mode().Perm() != 0o777 {
+		t.Fatalf("setuid mode = %v, want 0777 with no setuid", fi.Mode())
+	}
+	if fi, _ := os.Stat(filepath.Join(root, "garbage.yaml")); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("garbage mode = %v, want default 0600", fi.Mode().Perm())
+	}
+	if fi, _ := os.Stat(filepath.Join(root, "overflow.yaml")); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("overflow mode = %v, want default 0600", fi.Mode().Perm())
+	}
+}
+
+func TestDownloadSuccess(t *testing.T) {
+	body := []byte("GeoIP-mmdb-bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	root := t.TempDir()
+	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{{
+		Path:   "geo/Country.mmdb",
+		Source: &client.ShieldFile_Download{Download: &client.ShieldDownload{Url: srv.URL}},
+		Sha256: sum(body),
+		Mode:   "0644",
+	}}}
+	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+		t.Fatalf("download sync: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "geo", "Country.mmdb"))
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("downloaded content = %q err=%v", got, err)
+	}
+	assertNoTempFiles(t, root)
+}
+
+func TestDownloadRequiresSha(t *testing.T) {
+	root := t.TempDir()
+	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{{
+		Path:   "geo/x.mmdb",
+		Source: &client.ShieldFile_Download{Download: &client.ShieldDownload{Url: "http://example.invalid/x"}},
+		// no sha256
+	}}}
+	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+		t.Fatal("download without sha256 must be rejected (unverified)")
+	}
+}
+
+func TestDownloadShaMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("actual"))
+	}))
+	defer srv.Close()
+	root := t.TempDir()
+	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{{
+		Path:   "geo/x.mmdb",
+		Source: &client.ShieldFile_Download{Download: &client.ShieldDownload{Url: srv.URL}},
+		Sha256: sum([]byte("expected-different")),
+	}}}
+	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+		t.Fatal("download sha mismatch must error")
+	}
+	if _, err := os.Stat(filepath.Join(root, "geo", "x.mmdb")); !os.IsNotExist(err) {
+		t.Fatal("a mismatched download must not be committed")
 	}
 }
 
@@ -186,4 +320,14 @@ func TestListMissingDirEmpty(t *testing.T) {
 	if err != nil || got != nil {
 		t.Fatalf("missing dir should be empty/no-error, got %v err %v", got, err)
 	}
+}
+
+func assertNoTempFiles(t *testing.T, root string) {
+	t.Helper()
+	_ = filepath.WalkDir(root, func(p string, _ os.DirEntry, _ error) error {
+		if filepath.Ext(p) == tmpSuffix {
+			t.Fatalf("leftover temp file: %s", p)
+		}
+		return nil
+	})
 }
