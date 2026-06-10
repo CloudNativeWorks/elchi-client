@@ -3,7 +3,7 @@ module github.com/CloudNativeWorks/elchi-client
 go 1.24.1
 
 require (
-	github.com/CloudNativeWorks/elchi-proto v0.0.0-20260105113801-d89349b0818e
+	github.com/CloudNativeWorks/elchi-proto v0.0.0-20260610152828-bc4e800786e7
 	github.com/coreos/go-systemd/v22 v22.5.0
 	github.com/google/uuid v1.6.0
 	github.com/sirupsen/logrus v1.9.3

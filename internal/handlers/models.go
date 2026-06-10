@@ -75,3 +75,7 @@ type RsyslogCommandHandler struct {
 type UpgradeListenerCommandHandler struct {
 	services *services.Services
 }
+
+type ShieldCommandHandler struct {
+	services *services.Services
+}

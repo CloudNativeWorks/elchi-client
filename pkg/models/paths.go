@@ -8,10 +8,15 @@ const (
 	JournalLogPath  = "/var/log/journal"
 	ElchiPath       = "/etc/elchi"
 	ElchiLibPath    = "/var/lib/elchi"
-	EtcPath         = "/etc"
-	UsrPath         = "/usr"
-	DevPath         = "/dev/"
-	ProcPath        = "/proc"
+	// ShieldConfigPath is elchi-shield's watched config directory. The agent syncs
+	// the control-plane's config bundle here; shield self-watches it (fsnotify +
+	// atomic hot-reload). Must equal shield's --config-dir. ShieldFile.path values
+	// in the bundle are relative to this root (e.g. "api-public.yaml", "feeds/x.json").
+	ShieldConfigPath = "/etc/elchi/elchi-shield"
+	EtcPath          = "/etc"
+	UsrPath          = "/usr"
+	DevPath          = "/dev/"
+	ProcPath         = "/proc"
 
 	MachineID         = "/etc/machine-id"
 	OsRelease         = "/etc/os-release"

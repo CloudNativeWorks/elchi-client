@@ -61,3 +61,7 @@ func (h *RsyslogCommandHandler) Handle(ctx context.Context, cmd *client.Command)
 func (h *UpgradeListenerCommandHandler) Handle(ctx context.Context, cmd *client.Command) *client.CommandResponse {
 	return h.services.UpgradeListenerService(ctx, cmd)
 }
+
+func (h *ShieldCommandHandler) Handle(ctx context.Context, cmd *client.Command) *client.CommandResponse {
+	return h.services.ShieldService(ctx, cmd)
+}
