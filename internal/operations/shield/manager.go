@@ -120,6 +120,15 @@ func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *l
 		plan = append(plan, staged{rel: rel, abs: abs, tmp: tmp, mode: mode})
 	}
 
+	// Pre-commit gate: validate the staged config against the real shield binary
+	// BEFORE touching any live file, so a bad config is rejected with shield's
+	// precise file+field error and the live config is left untouched. Best-effort:
+	// if the validator can't run, the push proceeds (reload confirmation backstops).
+	if err := validateStaged(ctx, root, plan, log); err != nil {
+		cleanupStaged()
+		return err
+	}
+
 	// Phase 2 — COMMIT: fast renames; shield's debounce coalesces the burst.
 	for i, s := range plan {
 		if s.skip {
