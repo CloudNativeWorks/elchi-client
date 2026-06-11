@@ -44,15 +44,25 @@ func (s *Services) updateShieldConfig(ctx context.Context, cmd *client.Command) 
 	// (shield's /configz version is a content hash that moves iff the config does).
 	before := shield.SnapshotState(ctx)
 
-	if err := shield.SyncConfig(ctx, cfg, s.logger); err != nil {
+	changed, err := shield.SyncConfig(ctx, cfg, s.logger)
+	if err != nil {
 		s.logger.Errorf("shield config sync failed: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("shield config sync failed: %v", err))
 	}
 
 	// Confirm shield actually LOADED the new config rather than rejecting it and
 	// keeping last-good. applied_version / reload_ok now reflect shield's real
-	// state instead of optimistically echoing the pushed bundle.
-	applied, reloadOk := shield.ConfirmReload(ctx, before, s.logger)
+	// state instead of optimistically echoing the pushed bundle. When nothing on
+	// disk changed (idempotent re-push, e.g. on reconnect) there is nothing for
+	// shield to reload — skip the confirmation wait and answer from the pre-push
+	// snapshot, instead of burning the full poll timeout per push.
+	var applied string
+	var reloadOk bool
+	if !changed && before.Reachable && !before.Empty {
+		applied, reloadOk = before.Version, true
+	} else {
+		applied, reloadOk = shield.ConfirmReload(ctx, before, s.logger)
+	}
 	msg := fmt.Sprintf("shield config applied (%d files)", len(cfg.GetFiles()))
 	errMsg := ""
 	if !reloadOk {

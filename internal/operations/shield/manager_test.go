@@ -48,7 +48,7 @@ func TestSyncWritesFilesAndModes(t *testing.T) {
 			inlineFile("feeds/spamhaus.json", []byte("[\"1.2.3.0/24\"]"), ""), // nested + default mode
 		},
 	}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 
@@ -73,13 +73,13 @@ func TestFullSyncDeletesUnmanaged(t *testing.T) {
 		inlineFile("a.yaml", []byte("a"), ""),
 		inlineFile("feeds/x.json", []byte("x"), ""),
 	}}
-	if err := syncInto(context.Background(), root, first, log); err != nil {
+	if _, err := syncInto(context.Background(), root, first, log); err != nil {
 		t.Fatal(err)
 	}
 	second := &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
 		inlineFile("b.yaml", []byte("b"), ""),
 	}}
-	if err := syncInto(context.Background(), root, second, log); err != nil {
+	if _, err := syncInto(context.Background(), root, second, log); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "a.yaml")); !os.IsNotExist(err) {
@@ -96,12 +96,12 @@ func TestFullSyncDeletesUnmanaged(t *testing.T) {
 func TestNoFullSyncKeepsUnmanaged(t *testing.T) {
 	root := t.TempDir()
 	log := testLogger()
-	if err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
+	if _, err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
 		inlineFile("keep.yaml", []byte("keep"), ""),
 	}}, log); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: false, Files: []*client.ShieldFile{
+	if _, err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: false, Files: []*client.ShieldFile{
 		inlineFile("new.yaml", []byte("new"), ""),
 	}}, log); err != nil {
 		t.Fatal(err)
@@ -118,7 +118,7 @@ func TestManagedTmpNameKept(t *testing.T) {
 	cfg := &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
 		inlineFile("notes.tmp", []byte("keep me"), ""),
 	}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "notes.tmp")); err != nil {
@@ -131,12 +131,12 @@ func TestManagedTmpNameKept(t *testing.T) {
 func TestEmptyFullSyncWipes(t *testing.T) {
 	root := t.TempDir()
 	log := testLogger()
-	if err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
+	if _, err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
 		inlineFile("a.yaml", []byte("a"), ""),
 	}}, log); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true}, log); err != nil {
+	if _, err := syncInto(context.Background(), root, &client.ShieldConfig{FullSync: true}, log); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(root)
@@ -152,7 +152,7 @@ func TestSha256MismatchErrors(t *testing.T) {
 		Source: &client.ShieldFile_Inline{Inline: []byte("real")},
 		Sha256: sum([]byte("different")),
 	}}}
-	if err := syncInto(context.Background(), root, bad, testLogger()); err == nil {
+	if _, err := syncInto(context.Background(), root, bad, testLogger()); err == nil {
 		t.Fatal("expected sha256 mismatch error")
 	}
 	if _, err := os.Stat(filepath.Join(root, "x.yaml")); !os.IsNotExist(err) {
@@ -169,7 +169,7 @@ func TestPartialFailureLeavesNoLiveChange(t *testing.T) {
 		inlineFile("good2.yaml", []byte("g2"), ""),
 		{Path: "bad.yaml", Source: &client.ShieldFile_Inline{Inline: []byte("real")}, Sha256: sum([]byte("nope"))},
 	}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
 		t.Fatal("expected error")
 	}
 	for _, f := range []string{"good1.yaml", "good2.yaml", "bad.yaml"} {
@@ -184,12 +184,12 @@ func TestIdempotentSkip(t *testing.T) {
 	root := t.TempDir()
 	log := testLogger()
 	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{inlineFile("a.yaml", []byte("same"), "0644")}}
-	if err := syncInto(context.Background(), root, cfg, log); err != nil {
+	if _, err := syncInto(context.Background(), root, cfg, log); err != nil {
 		t.Fatal(err)
 	}
 	p := filepath.Join(root, "a.yaml")
 	fi1, _ := os.Stat(p)
-	if err := syncInto(context.Background(), root, cfg, log); err != nil {
+	if _, err := syncInto(context.Background(), root, cfg, log); err != nil {
 		t.Fatal(err)
 	}
 	fi2, _ := os.Stat(p)
@@ -202,7 +202,7 @@ func TestRejectsPathTraversal(t *testing.T) {
 	root := t.TempDir()
 	for _, bad := range []string{"../escape.yaml", "/etc/passwd", "a/../../b.yaml", "..", ""} {
 		cfg := &client.ShieldConfig{Files: []*client.ShieldFile{inlineFile(bad, []byte("x"), "")}}
-		if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+		if _, err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
 			t.Fatalf("path %q should be rejected", bad)
 		}
 	}
@@ -214,7 +214,7 @@ func TestRejectsDuplicatePath(t *testing.T) {
 		inlineFile("a.yaml", []byte("1"), ""),
 		inlineFile("a.yaml", []byte("2"), ""),
 	}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
 		t.Fatal("duplicate path should be rejected")
 	}
 }
@@ -227,7 +227,7 @@ func TestModeMasking(t *testing.T) {
 		inlineFile("garbage.yaml", []byte("b"), "abc"),      // -> default 0600
 		inlineFile("overflow.yaml", []byte("c"), "1000000"), // perm bits 0 -> default 0600
 	}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Stat(filepath.Join(root, "setuid.yaml")); fi.Mode()&os.ModeSetuid != 0 || fi.Mode().Perm() != 0o777 {
@@ -255,7 +255,7 @@ func TestDownloadSuccess(t *testing.T) {
 		Sha256: sum(body),
 		Mode:   "0644",
 	}}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
 		t.Fatalf("download sync: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(root, "geo", "Country.mmdb"))
@@ -272,7 +272,7 @@ func TestDownloadRequiresSha(t *testing.T) {
 		Source: &client.ShieldFile_Download{Download: &client.ShieldDownload{Url: "http://example.invalid/x"}},
 		// no sha256
 	}}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
 		t.Fatal("download without sha256 must be rejected (unverified)")
 	}
 }
@@ -288,7 +288,7 @@ func TestDownloadShaMismatch(t *testing.T) {
 		Source: &client.ShieldFile_Download{Download: &client.ShieldDownload{Url: srv.URL}},
 		Sha256: sum([]byte("expected-different")),
 	}}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err == nil {
 		t.Fatal("download sha mismatch must error")
 	}
 	if _, err := os.Stat(filepath.Join(root, "geo", "x.mmdb")); !os.IsNotExist(err) {
@@ -300,7 +300,7 @@ func TestListConfig(t *testing.T) {
 	root := t.TempDir()
 	content := []byte("hello")
 	cfg := &client.ShieldConfig{Files: []*client.ShieldFile{inlineFile("feeds/f.json", content, "0600")}}
-	if err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
+	if _, err := syncInto(context.Background(), root, cfg, testLogger()); err != nil {
 		t.Fatal(err)
 	}
 	got, err := listIn(root)
@@ -330,4 +330,34 @@ func assertNoTempFiles(t *testing.T, root string) {
 		}
 		return nil
 	})
+}
+
+func TestSyncReportsChanged(t *testing.T) {
+	root := t.TempDir()
+	cfg := &client.ShieldConfig{
+		FullSync: true,
+		Files:    []*client.ShieldFile{inlineFile("api.yaml", []byte("hosts: [\"*\"]\n"), "0640")},
+	}
+
+	// First sync lands a file → changed.
+	changed, err := syncInto(context.Background(), root, cfg, testLogger())
+	if err != nil || !changed {
+		t.Fatalf("first sync: changed=%v err=%v, want true,nil", changed, err)
+	}
+
+	// Identical re-push touches nothing → NOT changed (the caller skips the
+	// reload-confirmation wait on this).
+	changed, err = syncInto(context.Background(), root, cfg, testLogger())
+	if err != nil || changed {
+		t.Fatalf("idempotent re-push: changed=%v err=%v, want false,nil", changed, err)
+	}
+
+	// A full_sync that drops the file prunes it → changed again.
+	clear := &client.ShieldConfig{FullSync: true, Files: []*client.ShieldFile{
+		inlineFile("other.yaml", []byte("hosts: [\"*\"]\n"), "0640"),
+	}}
+	changed, err = syncInto(context.Background(), root, clear, testLogger())
+	if err != nil || !changed {
+		t.Fatalf("prune sync: changed=%v err=%v, want true,nil", changed, err)
+	}
 }

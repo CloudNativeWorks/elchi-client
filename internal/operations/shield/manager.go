@@ -58,18 +58,22 @@ type staged struct {
 // removes any managed file not in the set (deletions propagate). On a prepare-phase
 // error the directory is left unchanged; a commit-phase error (rare — only a
 // catastrophic rename failure) may leave earlier files applied, with the rest rolled
-// back, and is reported.
-func SyncConfig(ctx context.Context, cfg *client.ShieldConfig, log *logger.Logger) error {
+// back, and is reported. The returned changed flag reports whether anything on disk
+// actually changed (a file committed or pruned) — false means the bundle was already
+// fully applied, so shield has nothing to reload and the caller can skip the reload
+// confirmation wait entirely (idempotent re-pushes, e.g. on client reconnect, would
+// otherwise burn the full confirmation timeout per push).
+func SyncConfig(ctx context.Context, cfg *client.ShieldConfig, log *logger.Logger) (bool, error) {
 	return syncInto(ctx, models.ShieldConfigPath, cfg, log)
 }
 
 // syncInto is SyncConfig parametrized on the root directory (testable).
-func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *logger.Logger) error {
+func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *logger.Logger) (bool, error) {
 	if cfg == nil {
-		return fmt.Errorf("nil shield config")
+		return false, fmt.Errorf("nil shield config")
 	}
 	if err := os.MkdirAll(root, dirMode); err != nil {
-		return fmt.Errorf("create shield config dir %q: %w", root, err)
+		return false, fmt.Errorf("create shield config dir %q: %w", root, err)
 	}
 
 	// Phase 1 — PREPARE: validate + stage every file. No live file is touched.
@@ -87,11 +91,11 @@ func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *l
 		rel, err := safeRel(f.GetPath())
 		if err != nil {
 			cleanupStaged()
-			return err
+			return false, err
 		}
 		if _, dup := kept[rel]; dup {
 			cleanupStaged()
-			return fmt.Errorf("duplicate file path in bundle: %q", rel)
+			return false, fmt.Errorf("duplicate file path in bundle: %q", rel)
 		}
 		kept[rel] = struct{}{}
 
@@ -109,13 +113,13 @@ func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *l
 
 		if err := os.MkdirAll(filepath.Dir(abs), dirMode); err != nil {
 			cleanupStaged()
-			return fmt.Errorf("create dir for %q: %w", rel, err)
+			return false, fmt.Errorf("create dir for %q: %w", rel, err)
 		}
 		tmp := abs + tmpSuffix
 		if err := prepareFile(ctx, f, tmp, want, mode); err != nil {
 			_ = os.Remove(tmp)
 			cleanupStaged()
-			return fmt.Errorf("prepare %q: %w", rel, err)
+			return false, fmt.Errorf("prepare %q: %w", rel, err)
 		}
 		plan = append(plan, staged{rel: rel, abs: abs, tmp: tmp, mode: mode})
 	}
@@ -126,10 +130,11 @@ func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *l
 	// if the validator can't run, the push proceeds (reload confirmation backstops).
 	if err := validateStaged(ctx, root, plan, log); err != nil {
 		cleanupStaged()
-		return err
+		return false, err
 	}
 
 	// Phase 2 — COMMIT: fast renames; shield's debounce coalesces the burst.
+	committed := 0
 	for i, s := range plan {
 		if s.skip {
 			_ = os.Chmod(s.abs, s.mode)
@@ -143,16 +148,20 @@ func syncInto(ctx context.Context, root string, cfg *client.ShieldConfig, log *l
 					_ = os.Remove(rest.tmp)
 				}
 			}
-			return fmt.Errorf("commit %q: %w", s.rel, err)
+			return committed > 0, fmt.Errorf("commit %q: %w", s.rel, err)
 		}
+		committed++
 	}
 
+	pruned := 0
 	if cfg.GetFullSync() {
-		if err := pruneUnmanaged(root, kept, log); err != nil {
-			return err
+		var err error
+		pruned, err = pruneUnmanaged(root, kept, log)
+		if err != nil {
+			return committed > 0 || pruned > 0, err
 		}
 	}
-	return nil
+	return committed > 0 || pruned > 0, nil
 }
 
 // prepareFile validates f's content and writes it to tmp (with mode), without
@@ -239,8 +248,10 @@ func listIn(root string) ([]*client.ShieldFile, error) {
 
 // pruneUnmanaged removes every file under root whose relative path is not in kept
 // (this also sweeps stray ".tmp" files from a crashed run), then prunes emptied
-// subdirectories. It only ever operates under root.
-func pruneUnmanaged(root string, kept map[string]struct{}, log *logger.Logger) error {
+// subdirectories. It only ever operates under root. Returns how many files it
+// removed (feeds the caller's changed flag).
+func pruneUnmanaged(root string, kept map[string]struct{}, log *logger.Logger) (int, error) {
+	removed := 0
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -258,14 +269,15 @@ func pruneUnmanaged(root string, kept map[string]struct{}, log *logger.Logger) e
 		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
 			return fmt.Errorf("remove stale file %q: %w", rel, rerr)
 		}
+		removed++
 		log.Debugf("shield: removed unmanaged config file %s", rel)
 		return nil
 	})
 	if err != nil {
-		return err
+		return removed, err
 	}
 	pruneEmptyDirs(root)
-	return nil
+	return removed, nil
 }
 
 // pruneEmptyDirs removes empty subdirectories under root (root itself is kept).
