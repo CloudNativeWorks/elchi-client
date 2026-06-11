@@ -66,6 +66,16 @@ func validateStaged(ctx context.Context, root string, plan []staged, log *logger
 		return nil
 	}
 
+	// Sweep stale .shield-validate-* dirs first: a crash/SIGKILL during a previous
+	// validate leaks its temp dir (the deferred RemoveAll never ran). Command
+	// processing is strictly sequential, so anything matching here is guaranteed
+	// stale — without this they accumulate forever under the parent dir.
+	if stale, gerr := filepath.Glob(filepath.Join(filepath.Dir(root), ".shield-validate-*")); gerr == nil {
+		for _, d := range stale {
+			_ = os.RemoveAll(d)
+		}
+	}
+
 	// Sibling of root so hardlinks stay on one filesystem (copy fallback on EXDEV),
 	// and outside root so the running shield's watcher never sees the temp dir.
 	vdir, err := os.MkdirTemp(filepath.Dir(root), ".shield-validate-")

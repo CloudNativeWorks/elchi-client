@@ -162,6 +162,11 @@ func (m *SessionManager) mainLoop() error {
 	retryCount := 0
 	maxRetries := 5
 	backoffDuration := time.Second
+	// streamFlapCount backs off STREAM-level failures (Connect succeeded but the
+	// stream died quickly). Without it a flapping link re-registered at ~1 Hz —
+	// and every registration enqueues a connect-triggered shield deploy on the
+	// backend, so one flapping client generated ~60 jobs/minute.
+	streamFlapCount := 0
 
 	for {
 		// Context check at loop start
@@ -209,6 +214,7 @@ func (m *SessionManager) mainLoop() error {
 
 		// When connection is successful, reset retry count
 		retryCount = 0
+		streamStart := time.Now()
 
 		// Create a cancellable context for this stream session
 		streamCtx, streamCancel := context.WithCancel(m.ctx)
@@ -250,11 +256,27 @@ func (m *SessionManager) mainLoop() error {
 				m.session.sessionToken = ""
 			}()
 
-			// Context-aware sleep before reconnecting
+			// Context-aware sleep before reconnecting. A stream that died
+			// quickly (lived <30s) is a flap: back off exponentially (2s, 4s,
+			// 8s, 16s, capped 30s) instead of hammering re-registration — each
+			// registration costs the backend a connect-triggered shield deploy
+			// job. A stream that lived long resets the backoff.
+			reconnectDelay := time.Second
+			if time.Since(streamStart) < 30*time.Second {
+				streamFlapCount++
+				reconnectDelay = time.Second << uint(min(streamFlapCount, 5))
+				if reconnectDelay > 30*time.Second {
+					reconnectDelay = 30 * time.Second
+				}
+				m.logger.Warnf("Stream lived only %v (flap #%d); backing off %v before reconnect",
+					time.Since(streamStart).Round(time.Second), streamFlapCount, reconnectDelay)
+			} else {
+				streamFlapCount = 0
+			}
 			select {
 			case <-m.ctx.Done():
 				return nil
-			case <-time.After(time.Second):
+			case <-time.After(reconnectDelay):
 			}
 		}
 	}
