@@ -13,6 +13,9 @@ import (
 // shieldServiceName is the systemd unit name of the local elchi-shield sidecar.
 const shieldServiceName = "elchi-shield"
 
+// shieldLogLines is how many recent journald lines GET_SHIELD_STATUS returns.
+const shieldLogLines uint32 = 100
+
 // ShieldService handles SHIELD commands: deliver shield's watched config bundle,
 // read what's on disk, or report shield's service status. elchi-shield self-watches
 // its config dir and hot-reloads, so UPDATE only writes files — it never restarts
@@ -37,9 +40,27 @@ func (s *Services) updateShieldConfig(ctx context.Context, cmd *client.Command) 
 	}
 	cfg := req.GetConfig()
 
+	// Snapshot shield's active state BEFORE the push so the reload can be confirmed
+	// (shield's /configz version is a content hash that moves iff the config does).
+	before := shield.SnapshotState(ctx)
+
 	if err := shield.SyncConfig(ctx, cfg, s.logger); err != nil {
 		s.logger.Errorf("shield config sync failed: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("shield config sync failed: %v", err))
+	}
+
+	// Confirm shield actually LOADED the new config rather than rejecting it and
+	// keeping last-good. applied_version / reload_ok now reflect shield's real
+	// state instead of optimistically echoing the pushed bundle.
+	applied, reloadOk := shield.ConfirmReload(ctx, before, s.logger)
+	msg := fmt.Sprintf("shield config applied (%d files)", len(cfg.GetFiles()))
+	errMsg := ""
+	if !reloadOk {
+		msg = fmt.Sprintf("shield config written (%d files) but reload not confirmed", len(cfg.GetFiles()))
+		errMsg = "shield did not confirm the new config loaded (rejected and kept last-good, or shield unreachable)"
+	}
+	if applied == "" {
+		applied = cfg.GetVersion() // fall back to the bundle version when shield's active version is unknown
 	}
 
 	return &client.CommandResponse{
@@ -49,12 +70,10 @@ func (s *Services) updateShieldConfig(ctx context.Context, cmd *client.Command) 
 		Result: &client.CommandResponse_Shield{
 			Shield: &client.ResponseShield{
 				Success:        true,
-				Message:        fmt.Sprintf("shield config applied (%d files)", len(cfg.GetFiles())),
-				AppliedVersion: cfg.GetVersion(),
-				// shield self-watches the dir and hot-reloads (atomic, last-good on
-				// failure); the agent only lands the files, so reload_ok reflects a
-				// successful write, not a confirmed reload.
-				ReloadOk: true,
+				Message:        msg,
+				Error:          errMsg,
+				AppliedVersion: applied,
+				ReloadOk:       reloadOk,
 			},
 		},
 	}
@@ -87,6 +106,16 @@ func (s *Services) getShieldStatus(ctx context.Context, cmd *client.Command) *cl
 	} else if status != nil {
 		statusMsg = status.Active
 	}
+
+	// Best-effort recent logs from journald, mirroring the filebeat/rsyslog status
+	// responses. A read failure (e.g. shield never ran) degrades to no logs, not an
+	// error — the status itself is still useful.
+	logs, lerr := s.getServiceLogs(shieldServiceName, shieldLogLines)
+	if lerr != nil {
+		s.logger.Debugf("failed to get shield logs: %v", lerr)
+		logs = nil
+	}
+
 	return &client.CommandResponse{
 		Identity:  cmd.Identity,
 		CommandId: cmd.CommandId,
@@ -95,6 +124,7 @@ func (s *Services) getShieldStatus(ctx context.Context, cmd *client.Command) *cl
 			Shield: &client.ResponseShield{
 				Success:       true,
 				ServiceStatus: statusMsg,
+				Logs:          logs,
 			},
 		},
 	}
