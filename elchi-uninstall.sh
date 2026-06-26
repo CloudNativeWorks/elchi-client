@@ -72,6 +72,7 @@ echo "════════════════════════�
 echo ""
 warn "This script will remove:"
 echo "  • elchi-client service and binary"
+echo "  • elchi-shield sidecar service, binary and policies (/etc/elchi/elchi-shield)"
 echo "  • All elchi configurations"
 echo "  • System users: $ELCHI_USER, $ENVOY_USER"
 echo "  • Directories: $ELCHI_DIR, $ELCHI_VAR_LIB"
@@ -336,6 +337,10 @@ apt-get clean 2>/dev/null || true
 # Remove any leftover temporary files
 rm -rf /tmp/elchi-* 2>/dev/null || true
 rm -rf /tmp/libyang2-* 2>/dev/null || true
+
+# Remove the elchi-shield runtime socket dir (normally auto-cleaned by systemd
+# RuntimeDirectory, but drop it explicitly in case the service was killed hard).
+rm -rf /run/elchi-shield 2>/dev/null || true
 
 ###############################################################################
 # COMPLETION SUMMARY

@@ -28,11 +28,43 @@ SERVER_TLS=""
 SERVER_TOKEN=""
 CLIENT_CLOUD=""
 
+# Public mirror base for binaries. elchi-archive is the only PUBLIC repo; every
+# component's source repo is private. Install-time downloads are unauthenticated,
+# so they must hit the public mirror (an elchi-archive release), never a private
+# source repo. The elchi-archive build-elchi-client.yml substitutes this
+# placeholder with the release's asset base URL at publish time; both the client
+# and the bundled shield binary live in that release. A literal, unreplaced
+# placeholder (i.e. a direct run from this repo) falls back to the source repos.
+MIRROR_BASE_URL="__MIRROR_BASE_URL__"
+[[ "$MIRROR_BASE_URL" == *MIRROR_BASE_URL* ]] && MIRROR_BASE_URL=""
+
+# When this script is run directly (e.g. `curl raw .../main/elchi-install.sh | bash`)
+# the placeholder above is NOT substituted, so resolve the mirror at runtime from
+# elchi-archive's PUBLIC releases API. This keeps install-time downloads on the
+# public mirror — important because the shield source repo is private and an
+# unauthenticated fetch from it would fail. Idempotent: only resolves when empty.
+resolve_mirror_base_url() {
+  [[ -n "$MIRROR_BASE_URL" ]] && return 0
+  local archive_repo="CloudNativeWorks/elchi-archive" mtag
+  mtag="$(curl -fsSL "https://api.github.com/repos/${archive_repo}/releases?per_page=100" 2>/dev/null \
+            | grep '"tag_name":' \
+            | sed -E 's/.*"(elchi-client-[^"]+)".*/\1/' \
+            | grep '^elchi-client-' \
+            | head -n1 || true)"
+  if [[ -n "${mtag:-}" ]]; then
+    MIRROR_BASE_URL="https://github.com/${archive_repo}/releases/download/${mtag}"
+    info "📦 resolved public mirror: ${MIRROR_BASE_URL}"
+  else
+    warn "⚠️  could not resolve the elchi-archive mirror — falling back to source repos"
+  fi
+}
+
 # elchi-shield (the Envoy ext_proc API-security sidecar) is installed ALONGSIDE
 # the client on the same edge host, in the same install — never separately.
 # Use --no-shield to skip it. SHIELD_VERSION is pinned at release time by the
-# elchi-archive workflow (the __SHIELD_VERSION__ placeholder); a literal,
-# unreplaced placeholder (i.e. a direct run from this repo) means "latest".
+# elchi-archive workflow (the __SHIELD_VERSION__ placeholder) for reporting; the
+# binary itself is fetched from MIRROR_BASE_URL above. A literal, unreplaced
+# placeholder (i.e. a direct run from this repo) means "latest from source".
 INSTALL_SHIELD=true
 SHIELD_VERSION="__SHIELD_VERSION__"
 [[ "$SHIELD_VERSION" == *SHIELD_VERSION* ]] && SHIELD_VERSION=""
@@ -988,26 +1020,36 @@ RD
     chown "$ELCHI_USER:$ELCHI_USER" "$conf_dir/README"
   fi
 
-  # Resolve the release tag (pinned --shield-version, else latest).
-  local tag=""
-  if [[ -n "$SHIELD_VERSION" ]]; then
-    tag="$SHIELD_VERSION"
+  resolve_mirror_base_url
+  local suffix
+  case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
+    amd64|x86_64) suffix="linux-amd64" ;;
+    arm64|aarch64) suffix="linux-arm64" ;;
+    *) warn "⚠️  unsupported arch — defaulting to amd64"; suffix="linux-amd64" ;;
+  esac
+
+  # Resolve where to fetch shield from. Prefer the PUBLIC elchi-archive mirror
+  # (the shield binary is bundled into the same release as this installer); only
+  # fall back to the private source repo on a raw, un-published run from source.
+  local url=""
+  if [[ -n "$MIRROR_BASE_URL" ]]; then
+    url="$MIRROR_BASE_URL/elchi-shield-${suffix}"
+    info "📦 elchi-shield from mirror${SHIELD_VERSION:+ ($SHIELD_VERSION)}"
   else
-    tag=$(curl -s "https://api.github.com/repos/$repo/releases/latest" \
-            | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+    local tag="$SHIELD_VERSION"
+    if [[ -z "$tag" ]]; then
+      tag=$(curl -s "https://api.github.com/repos/$repo/releases/latest" \
+              | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+    fi
+    if [[ -n "$tag" ]]; then
+      url="https://github.com/$repo/releases/download/$tag/elchi-shield-${suffix}"
+      info "📦 elchi-shield release (source): $tag"
+    fi
   fi
 
-  if [[ -z "$tag" ]]; then
-    warn "⚠️  could not resolve an elchi-shield release — place the binary at $shield_binary manually"
+  if [[ -z "$url" ]]; then
+    warn "⚠️  could not resolve an elchi-shield download — place the binary at $shield_binary manually"
   else
-    info "📦 elchi-shield release: $tag"
-    local suffix
-    case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
-      amd64|x86_64) suffix="linux-amd64" ;;
-      arm64|aarch64) suffix="linux-arm64" ;;
-      *) warn "⚠️  unsupported arch — defaulting to amd64"; suffix="linux-amd64" ;;
-    esac
-    local url="https://github.com/$repo/releases/download/$tag/elchi-shield-${suffix}"
     local tmp="/tmp/elchi-shield-download"
     info "🔗 downloading $url"
     if curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "$url" -o "$tmp"; then
@@ -1098,7 +1140,9 @@ EOF
   chmod 644 "$shield_service"
   run systemctl daemon-reload
   if [[ -f "$shield_binary" ]]; then
-    run systemctl enable --now elchi-shield.service
+    run systemctl enable elchi-shield.service
+    # restart (not enable --now) so a re-run picks up a freshly downloaded binary.
+    run systemctl restart elchi-shield.service
   else
     run systemctl enable elchi-shield.service
     warn "⚠️  shield binary missing — service enabled but not started"
@@ -1362,15 +1406,25 @@ ok "✅ config.yaml created successfully"
 
 # Download elchi-client binary from latest GitHub release
 info "📥 Downloading elchi-client binary from latest GitHub release"
+resolve_mirror_base_url
 GITHUB_REPO="CloudNativeWorks/elchi-client"
-LATEST_RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
-
-# Get latest release tag
-LATEST_TAG=$(curl -s "$LATEST_RELEASE_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+if [[ -n "$MIRROR_BASE_URL" ]]; then
+  # Mirror path: the client binary lives in the same elchi-archive release as
+  # this installer, so no private source-repo API call is needed.
+  LATEST_TAG="(mirror)"
+else
+  LATEST_RELEASE_URL="https://api.github.com/repos/$GITHUB_REPO/releases/latest"
+  # Get latest release tag
+  LATEST_TAG=$(curl -s "$LATEST_RELEASE_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+fi
 
 if [[ -n "$LATEST_TAG" ]]; then
-  info "📦 Latest release: $LATEST_TAG"
-  
+  if [[ -n "$MIRROR_BASE_URL" ]]; then
+    info "📦 elchi-client from mirror"
+  else
+    info "📦 Latest release: $LATEST_TAG"
+  fi
+
   # Download elchi-client binary (architecture-specific)
   
   # Detect system architecture
@@ -1390,7 +1444,12 @@ if [[ -n "$LATEST_TAG" ]]; then
       ;;
   esac
   
-  BINARY_DOWNLOAD_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_TAG/elchi-client-${BINARY_SUFFIX}"
+  if [[ -n "$MIRROR_BASE_URL" ]]; then
+    CLIENT_BASE_URL="$MIRROR_BASE_URL"
+  else
+    CLIENT_BASE_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_TAG"
+  fi
+  BINARY_DOWNLOAD_URL="$CLIENT_BASE_URL/elchi-client-${BINARY_SUFFIX}"
   BINARY_PATH="$ELCHI_BIN_DIR/elchi-client"
   TEMP_BINARY="/tmp/elchi-client-download"
   
@@ -1401,7 +1460,7 @@ if [[ -n "$LATEST_TAG" ]]; then
     info "✅ Binary downloaded to temp location"
     
     # Download and verify checksum
-    CHECKSUM_URL="https://github.com/$GITHUB_REPO/releases/download/$LATEST_TAG/elchi-client-${BINARY_SUFFIX}.sha256"
+    CHECKSUM_URL="$CLIENT_BASE_URL/elchi-client-${BINARY_SUFFIX}.sha256"
     TEMP_CHECKSUM="/tmp/elchi-client.sha256"
     
     info "🔐 Downloading checksum file for verification"
@@ -1524,7 +1583,9 @@ EOF
 
 chmod 644 "$SERVICE_FILE"
 run systemctl daemon-reload
-run systemctl enable --now elchi-client.service
+run systemctl enable elchi-client.service
+# restart (not enable --now) so a re-run picks up a freshly downloaded binary.
+run systemctl restart elchi-client.service
 
 # Configure system components
 setup_sources_list

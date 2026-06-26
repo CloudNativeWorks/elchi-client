@@ -14,6 +14,9 @@
 ## 📋 Requirements
 
 - **Operating System**: Ubuntu 24.04 LTS (minimum)
+- **Architecture**: `linux/amd64`. The published installer (mirrored through
+  `CloudNativeWorks/elchi-archive`) ships amd64 binaries only, matching the rest
+  of the elchi stack; `arm64` must be built from source.
 - **Go**: 1.21 or higher (for development)
 - **System**: Root privileges for installation
 - **Network**: Internet access for dependencies
@@ -29,6 +32,16 @@ curl -fsSL https://raw.githubusercontent.com/CloudNativeWorks/elchi-client/main/
 # For BGP/FRR support
 curl -fsSL https://raw.githubusercontent.com/CloudNativeWorks/elchi-client/main/elchi-install.sh | sudo bash -s -- --enable-bgp
 ```
+
+> **Bundled elchi-shield sidecar.** The installer also installs **elchi-shield**
+> (the Envoy `ext_proc` API-security / WAF sidecar) on the same edge host, in the
+> same run — it lives next to the client on the data plane, never on the control
+> plane. The shield binary is fetched from the **public elchi-archive mirror**
+> (the same release as the installer), not from a private source repo. Skip it
+> with `--no-shield`; tune its audit/metrics sinks with `--shield-audit-dsn=`,
+> `--shield-metrics-otlp=` (both off by default). For shield's policy/Envoy
+> wiring contract, the control plane (elchi-backend) is what pushes the
+> `ext_proc` filter + the policy files into `/etc/elchi/elchi-shield/conf.d`.
 
 ## ⚙️ Configuration
 
@@ -111,13 +124,13 @@ ELCHI_LOGGING_LEVEL=debug systemctl restart elchi-client
 
 ## 🔄 Updates
 
-The client automatically downloads the latest binary during bootstrap. For manual updates:
+The installer downloads the client (and the bundled shield sidecar) from the
+public `CloudNativeWorks/elchi-archive` mirror during bootstrap. To update,
+re-run the installer — it pulls the current mirrored release:
 
 ```bash
-# Download latest release
-curl -fsSL https://github.com/CloudNativeWorks/elchi-client/releases/latest/download/elchi-client -o /etc/elchi/bin/elchi-client
-chmod 755 /etc/elchi/bin/elchi-client
+curl -fsSL https://raw.githubusercontent.com/CloudNativeWorks/elchi-client/main/elchi-install.sh | sudo bash
+```
 
-# Restart service
-sudo systemctl restart elchi-client
-``` 
+The latest mirrored versions are listed in the archive's `index.json`
+(`elchi_client_releases` / `elchi_shield_releases`). 
