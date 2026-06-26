@@ -28,6 +28,19 @@ SERVER_TLS=""
 SERVER_TOKEN=""
 CLIENT_CLOUD=""
 
+# elchi-shield (the Envoy ext_proc API-security sidecar) is installed ALONGSIDE
+# the client on the same edge host, in the same install — never separately.
+# Use --no-shield to skip it. SHIELD_VERSION is pinned at release time by the
+# elchi-archive workflow (the __SHIELD_VERSION__ placeholder); a literal,
+# unreplaced placeholder (i.e. a direct run from this repo) means "latest".
+INSTALL_SHIELD=true
+SHIELD_VERSION="__SHIELD_VERSION__"
+[[ "$SHIELD_VERSION" == *SHIELD_VERSION* ]] && SHIELD_VERSION=""
+# Optional shield telemetry sinks (off by default; env fallbacks for CI/automation).
+SHIELD_AUDIT_DSN="${ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN:-}"
+SHIELD_METRICS_OTLP="${ELCHI_SHIELD_METRICS_OTLP_ENDPOINT:-}"
+SHIELD_METRICS_INSECURE="${ELCHI_SHIELD_METRICS_OTLP_INSECURE:-}"
+
 # System users
 ELCHI_USER="elchi"
 ENVOY_USER="envoyuser"
@@ -138,6 +151,26 @@ while [[ $# -gt 0 ]]; do
       CLIENT_CLOUD="${1#*=}"
       shift
       ;;
+    --no-shield)
+      INSTALL_SHIELD=false
+      shift
+      ;;
+    --shield-version=*)
+      SHIELD_VERSION="${1#*=}"
+      shift
+      ;;
+    --shield-audit-dsn=*)
+      SHIELD_AUDIT_DSN="${1#*=}"
+      shift
+      ;;
+    --shield-metrics-otlp=*)
+      SHIELD_METRICS_OTLP="${1#*=}"
+      shift
+      ;;
+    --shield-metrics-insecure)
+      SHIELD_METRICS_INSECURE=1
+      shift
+      ;;
     --help|-h)
       echo "Usage: $0 --name=NAME --host=HOST --port=PORT --tls=true|false --token=TOKEN [OPTIONS]"
       echo ""
@@ -151,6 +184,11 @@ while [[ $# -gt 0 ]]; do
       echo "Optional Parameters:"
       echo "  --cloud=CLOUD              Cloud name (defaults to 'other')"
       echo "  --enable-bgp               Install and configure FRR routing"
+      echo "  --no-shield                Do NOT install the elchi-shield sidecar (installed by default)"
+      echo "  --shield-version=vX.Y.Z    Pin the elchi-shield release (default: latest)"
+      echo "  --shield-audit-dsn=DSN     Send shield audit events to central ClickHouse (else off)"
+      echo "  --shield-metrics-otlp=H:P  Push shield metrics to an OTel Collector (OTLP/gRPC)"
+      echo "  --shield-metrics-insecure  Plaintext gRPC to the shield metrics collector"
       echo "  --help, -h                 Show this help message"
       echo ""
       echo "Important Note:"
@@ -916,6 +954,159 @@ EOF
 
 
 ###############################################################################
+# ELCHI-SHIELD (Envoy ext_proc API-security / WAF sidecar)
+###############################################################################
+# Installed next to the client on the same host, in the SAME install run. The
+# client writes shield's policy files into the watched conf.d; shield inspects
+# Envoy traffic over a /run UDS and exposes health/metrics on loopback only.
+# Shares the elchi user/group + /etc/elchi/bin already created above (so Envoy,
+# already added to the elchi group, can reach the UDS). Audit/metrics are off
+# unless a DSN/endpoint is given. Binary download failure is non-fatal.
+install_configure_shield() {
+  local shield_dir="$ELCHI_DIR/elchi-shield"
+  local conf_dir="$shield_dir/conf.d"
+  local files_dir="$shield_dir/files"
+  local run_dir_name="elchi-shield"
+  local socket_path="/run/$run_dir_name/extproc.sock"
+  local http_addr="127.0.0.1:9001"
+  local shield_service="/etc/systemd/system/elchi-shield.service"
+  local shield_binary="$ELCHI_BIN_DIR/elchi-shield"
+  local repo="CloudNativeWorks/elchi-shield"
+
+  info "🛡️  Installing elchi-shield (Envoy ext_proc API-security sidecar)"
+
+  # Directory tree (elchi-client populates conf.d; shield only reads it).
+  run mkdir -p "$conf_dir" "$files_dir"
+  run chown -R "$ELCHI_USER:$ELCHI_USER" "$shield_dir"
+  run chmod -R u=rwX,g=rX,o= "$shield_dir"
+  if [[ ! -e "$conf_dir/README" ]]; then
+    cat >"$conf_dir/README" <<'RD'
+# elchi-shield watches this directory for *.yaml / *.json policy files.
+# Managed by elchi-client (pushed from the Elchi control plane).
+# Empty directory = no policy → the configured default posture applies.
+RD
+    chown "$ELCHI_USER:$ELCHI_USER" "$conf_dir/README"
+  fi
+
+  # Resolve the release tag (pinned --shield-version, else latest).
+  local tag=""
+  if [[ -n "$SHIELD_VERSION" ]]; then
+    tag="$SHIELD_VERSION"
+  else
+    tag=$(curl -s "https://api.github.com/repos/$repo/releases/latest" \
+            | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || echo "")
+  fi
+
+  if [[ -z "$tag" ]]; then
+    warn "⚠️  could not resolve an elchi-shield release — place the binary at $shield_binary manually"
+  else
+    info "📦 elchi-shield release: $tag"
+    local suffix
+    case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
+      amd64|x86_64) suffix="linux-amd64" ;;
+      arm64|aarch64) suffix="linux-arm64" ;;
+      *) warn "⚠️  unsupported arch — defaulting to amd64"; suffix="linux-amd64" ;;
+    esac
+    local url="https://github.com/$repo/releases/download/$tag/elchi-shield-${suffix}"
+    local tmp="/tmp/elchi-shield-download"
+    info "🔗 downloading $url"
+    if curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "$url" -o "$tmp"; then
+      local sum_url="${url}.sha256" tmpsum="/tmp/elchi-shield.sha256"
+      if curl -fsSL --retry 3 --retry-delay 2 --max-time 30 "$sum_url" -o "$tmpsum"; then
+        local exp act
+        exp=$(awk '{print $1}' "$tmpsum")
+        if command -v sha256sum >/dev/null 2>&1; then act=$(sha256sum "$tmp" | awk '{print $1}'); else act=$(shasum -a 256 "$tmp" | awk '{print $1}'); fi
+        [[ "$exp" == "$act" ]] || fail "❌ elchi-shield checksum mismatch (expected $exp, got $act)"
+        ok "✅ elchi-shield checksum verified"
+        rm -f "$tmpsum"
+      else
+        warn "⚠️  no elchi-shield checksum published — skipping verification"
+      fi
+      install -m 0755 -o root -g "$ELCHI_USER" "$tmp" "$shield_binary"
+      rm -f "$tmp"
+      ok "✅ elchi-shield binary installed"
+    else
+      warn "⚠️  elchi-shield binary download failed — place it at $shield_binary manually"
+      rm -f "$tmp"
+    fi
+  fi
+
+  # Audit sink: ClickHouse when a DSN is given (DSN may carry creds → restricted
+  # EnvironmentFile, never the world-readable unit); otherwise audit is OFF.
+  local audit_env_file="$shield_dir/audit.env" env_file_line="" audit_args=""
+  if [[ -n "$SHIELD_AUDIT_DSN" ]]; then
+    info "🛡️  shield audit → central ClickHouse"
+    ( umask 037; printf 'ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN=%s\n' "$SHIELD_AUDIT_DSN" >"$audit_env_file" )
+    chown "$ELCHI_USER:$ELCHI_USER" "$audit_env_file"
+    chmod 0640 "$audit_env_file"
+    env_file_line="EnvironmentFile=-$audit_env_file"
+    audit_args="--audit-exporter clickhouse"
+  else
+    rm -f "$audit_env_file"   # drop a stale DSN from a previous install
+  fi
+  local metrics_args=""
+  if [[ -n "$SHIELD_METRICS_OTLP" ]]; then
+    metrics_args="--metrics-otlp-endpoint $SHIELD_METRICS_OTLP${SHIELD_METRICS_INSECURE:+ --metrics-otlp-insecure}"
+  fi
+
+  # Hardened systemd unit (UDS + loopback only; never exposed off-box).
+  info "writing $shield_service"
+  cat >"$shield_service" <<EOF
+[Unit]
+Description=Elchi Shield — Envoy ext_proc API security / WAF sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$ELCHI_USER
+Group=$ELCHI_USER
+$env_file_line
+RuntimeDirectory=$run_dir_name
+RuntimeDirectoryMode=2750
+ExecStartPre=-$shield_binary validate $conf_dir
+ExecStart=$shield_binary \\
+  --config-dir $conf_dir \\
+  --extproc-network unix \\
+  --extproc-addr $socket_path \\
+  --http-addr $http_addr \\
+  $audit_args $metrics_args \\
+  --log-format json \\
+  --log-level info
+
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=$shield_dir $ELCHI_LOG_DIR
+UMask=0007
+LimitNOFILE=262144
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=elchi-shield
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 644 "$shield_service"
+  run systemctl daemon-reload
+  if [[ -f "$shield_binary" ]]; then
+    run systemctl enable --now elchi-shield.service
+  else
+    run systemctl enable elchi-shield.service
+    warn "⚠️  shield binary missing — service enabled but not started"
+  fi
+  ok "✅ elchi-shield installed"
+}
+
+###############################################################################
 # MAIN EXECUTION FLOW
 ###############################################################################
 
@@ -1362,6 +1553,13 @@ else
   info "⏭️  FRR installation skipped (use --enable-bgp to enable)"
 fi
 
+# elchi-shield sidecar (installed in the same run unless --no-shield)
+if [[ "$INSTALL_SHIELD" == true ]]; then
+  install_configure_shield
+else
+  info "⏭️  elchi-shield installation skipped (--no-shield)"
+fi
+
 ###############################################################################
 # COMPLETION SUMMARY
 ###############################################################################
@@ -1424,6 +1622,14 @@ if [[ "$ENABLE_FRR" == true ]]; then
 else
   printf "${C_INF}│${C_RST} ⏭️  FRR Routing: ${C_WRN}Skipped${C_RST}\n"
   printf "${C_INF}│${C_RST}    └─ 💡 Enable with: ${C_INF}$0 --enable-bgp${C_RST}\n"
+fi
+
+if [[ "$INSTALL_SHIELD" == true ]]; then
+  SHIELD_STATE=$(systemctl is-active elchi-shield.service 2>/dev/null || echo inactive)
+  printf "${C_INF}│${C_RST} 🛡️  elchi-shield (ext_proc WAF): ${C_OK}Installed${C_RST} (service: %s)\n" "$SHIELD_STATE"
+  printf "${C_INF}│${C_RST}    └─ ext_proc UDS: ${C_OK}/run/elchi-shield/extproc.sock${C_RST}\n"
+else
+  printf "${C_INF}│${C_RST} ⏭️  elchi-shield: ${C_WRN}Skipped (--no-shield)${C_RST}\n"
 fi
 
 printf "${C_INF}└──────────────────────────────────────────────────────────────────────────────┘${C_RST}\n"
