@@ -38,10 +38,26 @@ curl -fsSL https://raw.githubusercontent.com/CloudNativeWorks/elchi-client/main/
 > same run — it lives next to the client on the data plane, never on the control
 > plane. The shield binary is fetched from the **public elchi-archive mirror**
 > (the same release as the installer), not from a private source repo. Skip it
-> with `--no-shield`; tune its audit/metrics sinks with `--shield-audit-dsn=`,
-> `--shield-metrics-otlp=` (both off by default). For shield's policy/Envoy
-> wiring contract, the control plane (elchi-backend) is what pushes the
-> `ext_proc` filter + the policy files into `/etc/elchi/elchi-shield/conf.d`.
+> with `--no-shield`. Two separate configs, both editable on the host:
+>
+> - **Sink config — ClickHouse + OTel addresses:** `/etc/elchi/elchi-shield/config.yaml`
+>   (shield's `--config-file`; mode `0600`, holds the DSN). Seed it at install with
+>   `--shield-audit-dsn=` / `--shield-metrics-otlp=` (both off by default), or just
+>   edit the file afterwards and `systemctl restart elchi-shield`. Re-running the
+>   installer preserves your edits. Shape:
+>   ```yaml
+>   audit:
+>     exporter: clickhouse                 # none | clickhouse | otel
+>     clickhouse_dsn: "clickhouse://user:pass@CH-HOST:9000/elchi"
+>     clickhouse_ttl_days: 7
+>   metrics:
+>     otlp_endpoint: "OTEL-HOST:4317"      # empty = /metrics scrape only
+>     otlp_insecure: false
+>   ```
+> - **Security policies:** `/etc/elchi/elchi-shield/conf.d/*.yaml` (watched,
+>   hot-reloaded). Pushed by the control plane via the agent; or drop a policy
+>   file there yourself (see the elchi-shield repo's `configs/examples/`). The
+>   control plane (elchi-backend) is what wires the Envoy `ext_proc` filter.
 
 ## ⚙️ Configuration
 

@@ -1073,23 +1073,45 @@ RD
     fi
   fi
 
-  # Audit sink: ClickHouse when a DSN is given (DSN may carry creds → restricted
-  # EnvironmentFile, never the world-readable unit); otherwise audit is OFF.
-  local audit_env_file="$shield_dir/audit.env" env_file_line="" audit_args=""
-  if [[ -n "$SHIELD_AUDIT_DSN" ]]; then
-    info "🛡️  shield audit → central ClickHouse"
-    ( umask 037; printf 'ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN=%s\n' "$SHIELD_AUDIT_DSN" >"$audit_env_file" )
-    chown "$ELCHI_USER:$ELCHI_USER" "$audit_env_file"
-    chmod 0640 "$audit_env_file"
-    env_file_line="EnvironmentFile=-$audit_env_file"
-    audit_args="--audit-exporter clickhouse"
+  # Sink config (ClickHouse audit DSN + OTLP metrics endpoint) lives in ONE
+  # editable file — shield's --config-file. The operator edits THIS after install
+  # (CH address, OTel address) and restarts the service; policies are separate
+  # (conf.d/*.yaml). It may carry the ClickHouse password → 0600 (shield warns
+  # otherwise). Preserve it on re-run so manual edits are never clobbered.
+  local shield_cfg="$shield_dir/config.yaml"
+  if [[ -f "$shield_cfg" ]]; then
+    ok "✅ shield sink config exists — preserving ($shield_cfg)"
   else
-    rm -f "$audit_env_file"   # drop a stale DSN from a previous install
+    # Migrate a DSN from the legacy audit.env (installs predating config.yaml) so
+    # a re-run without --shield-audit-dsn doesn't silently drop it.
+    if [[ -z "$SHIELD_AUDIT_DSN" && -f "$shield_dir/audit.env" ]]; then
+      SHIELD_AUDIT_DSN=$(sed -nE 's/^ELCHI_SHIELD_AUDIT_CLICKHOUSE_DSN=(.*)$/\1/p' "$shield_dir/audit.env" | head -n1)
+      [[ -n "$SHIELD_AUDIT_DSN" ]] && info "↪ migrating shield audit DSN from legacy audit.env"
+    fi
+    local _exporter="none"; [[ -n "$SHIELD_AUDIT_DSN" ]] && _exporter="clickhouse"
+    local _otlp_insecure="false"; [[ -n "$SHIELD_METRICS_INSECURE" ]] && _otlp_insecure="true"
+    info "📝 writing shield sink config $shield_cfg"
+    ( umask 077; cat >"$shield_cfg" <<EOF
+# elchi-shield SINK config — audit (ClickHouse) + metrics (OTLP).
+# Edit, then:  systemctl restart elchi-shield
+# Holds the ClickHouse DSN (may contain a password) — keep this file chmod 0600.
+# NOTE: this is the PROCESS/sink config. Security POLICIES live in conf.d/*.yaml.
+audit:
+  # exporter: none | clickhouse | otel  (auto = clickhouse when a dsn is set)
+  exporter: ${_exporter}
+  # ClickHouse audit sink. e.g. clickhouse://user:pass@CH-HOST:9000/elchi
+  clickhouse_dsn: "${SHIELD_AUDIT_DSN}"
+  clickhouse_ttl_days: 7
+metrics:
+  # Push metrics to an OTel Collector (OTLP/gRPC host:port). Empty = /metrics scrape only.
+  otlp_endpoint: "${SHIELD_METRICS_OTLP}"
+  otlp_insecure: ${_otlp_insecure}
+EOF
+    )
+    chown "$ELCHI_USER:$ELCHI_USER" "$shield_cfg"
+    chmod 0600 "$shield_cfg"
   fi
-  local metrics_args=""
-  if [[ -n "$SHIELD_METRICS_OTLP" ]]; then
-    metrics_args="--metrics-otlp-endpoint $SHIELD_METRICS_OTLP${SHIELD_METRICS_INSECURE:+ --metrics-otlp-insecure}"
-  fi
+  rm -f "$shield_dir/audit.env"   # legacy: superseded by config.yaml
 
   # Hardened systemd unit (UDS + loopback only; never exposed off-box).
   info "writing $shield_service"
@@ -1103,16 +1125,15 @@ Wants=network-online.target
 Type=simple
 User=$ELCHI_USER
 Group=$ELCHI_USER
-$env_file_line
 RuntimeDirectory=$run_dir_name
 RuntimeDirectoryMode=2750
 ExecStartPre=-$shield_binary validate $conf_dir
 ExecStart=$shield_binary \\
   --config-dir $conf_dir \\
+  --config-file $shield_cfg \\
   --extproc-network unix \\
   --extproc-addr $socket_path \\
   --http-addr $http_addr \\
-  $audit_args $metrics_args \\
   --log-format json \\
   --log-level info
 
