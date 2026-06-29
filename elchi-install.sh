@@ -1080,6 +1080,10 @@ RD
   # otherwise). Preserve it on re-run so manual edits are never clobbered.
   local shield_cfg="$shield_dir/config.yaml"
   if [[ -f "$shield_cfg" ]]; then
+    # Preserve operator edits, but always re-assert ownership + 0600 — the file
+    # may hold the ClickHouse DSN/password and shield warns if it's group-readable.
+    chown "$ELCHI_USER:$ELCHI_USER" "$shield_cfg" 2>/dev/null || true
+    chmod 0600 "$shield_cfg" 2>/dev/null || true
     ok "✅ shield sink config exists — preserving ($shield_cfg)"
   else
     # Migrate a DSN from the legacy audit.env (installs predating config.yaml) so

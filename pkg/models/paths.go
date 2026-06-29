@@ -8,11 +8,18 @@ const (
 	JournalLogPath  = "/var/log/journal"
 	ElchiPath       = "/etc/elchi"
 	ElchiLibPath    = "/var/lib/elchi"
-	// ShieldConfigPath is elchi-shield's watched config directory. The agent syncs
+	// ShieldConfigPath is elchi-shield's watched POLICY directory. The agent syncs
 	// the control-plane's config bundle here; shield self-watches it (fsnotify +
 	// atomic hot-reload). Must equal shield's --config-dir. ShieldFile.path values
 	// in the bundle are relative to this root (e.g. "api-public.yaml", "feeds/x.json").
-	ShieldConfigPath = "/etc/elchi/elchi-shield"
+	//
+	// It is the `conf.d` SUBDIR, NOT the parent /etc/elchi/elchi-shield: the parent
+	// holds shield's PROCESS config (config.yaml — ClickHouse DSN / OTLP), which the
+	// agent must never see or prune. SyncConfig reconciles (and prunes unmanaged
+	// files in) exactly this root, so scoping it to conf.d keeps config.yaml and the
+	// dir itself untouched. Using the parent here deletes config.yaml as "unmanaged"
+	// and removes the emptied conf.d, breaking every push.
+	ShieldConfigPath = "/etc/elchi/elchi-shield/conf.d"
 	// ShieldHTTPAddr is elchi-shield's loopback management HTTP endpoint (its
 	// --http-addr / ELCHI_SHIELD_HTTP_ADDR default). The agent polls /configz and
 	// /metrics here to confirm a config push actually loaded. Must equal shield's
