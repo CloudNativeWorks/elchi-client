@@ -73,13 +73,16 @@ func (s *Services) updateShieldConfig(ctx context.Context, cmd *client.Command) 
 		applied = cfg.GetVersion() // fall back to the bundle version when shield's active version is unknown
 	}
 
+	// Report the REAL outcome: when shield rejected the config (kept last-good)
+	// or was unreachable, reloadOk is false and this must surface as a failure
+	// instead of an optimistic Success=true that hides broken security policy.
 	return &client.CommandResponse{
 		Identity:  cmd.Identity,
 		CommandId: cmd.CommandId,
-		Success:   true,
+		Success:   reloadOk,
 		Result: &client.CommandResponse_Shield{
 			Shield: &client.ResponseShield{
-				Success:        true,
+				Success:        reloadOk,
 				Message:        msg,
 				Error:          errMsg,
 				AppliedVersion: applied,

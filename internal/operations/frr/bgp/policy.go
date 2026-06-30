@@ -364,8 +364,12 @@ func (pm *PolicyManager) updateCommunityList(communityList *client.BgpCommunityL
 		return nil // Idempotent operation
 	}
 
-	// Remove existing community list entry and add the new one
-	removeCommands := pm.generateRemoveCommunityListCommands(communityList.Name)
+	// Remove ONLY this sequence (of this type) and re-add it. Removing the whole
+	// named list ("no bgp community-list <type> NAME") would delete every other
+	// sequence sharing the name. NOTE: if the caller changes the *type* of an
+	// existing name+seq (standard<->expanded), the old-type entry is not removed
+	// here; that is a rare redefinition and out of scope for this update path.
+	removeCommands := pm.generateRemoveCommunityListSeqCommands(communityList)
 	if err := pm.applyCommands(removeCommands); err != nil {
 		return pm.errorHandler.NewConfigError("remove_community_list_commands", err)
 	}
@@ -557,8 +561,14 @@ func (pm *PolicyManager) updatePrefixList(prefixList *client.BgpPrefixList) erro
 		return nil // Idempotent operation
 	}
 
-	// Remove existing prefix list entry and add the new one
-	removeCommands := pm.generateRemovePrefixListCommands(prefixList.Name)
+	// Remove ONLY this sequence and re-add it. Removing the whole named list
+	// ("no ip prefix-list NAME") would delete every other sequence of the same
+	// prefix list. Per-sequence removal is valid FRR syntax (see addPrefixList).
+	removeCommands := []string{
+		"configure terminal",
+		fmt.Sprintf("no ip prefix-list %s seq %d", prefixList.Name, prefixList.Sequence),
+		"exit",
+	}
 	if err := pm.applyCommands(removeCommands); err != nil {
 		return pm.errorHandler.NewConfigError("remove_prefix_list_commands", err)
 	}
@@ -932,47 +942,48 @@ func (pm *PolicyManager) generateCommunityListCommands(communityList *client.Bgp
 	return commands, nil
 }
 
-// generatePrefixListCommands generates FRR commands for prefix list configuration
-func (pm *PolicyManager) generatePrefixListCommands(prefixList *client.BgpPrefixList) ([]string, error) {
-	var commands []string
-
-	// Enter configuration mode
-	commands = append(commands, "configure terminal")
-
-	// Get action string
+// buildPrefixListLine builds the canonical FRR "ip prefix-list ..." configuration
+// line for a single prefix-list entry. Both command generation and the
+// idempotency check (isPrefixListConfigured) go through this one builder so the
+// line that gets written and the line that gets compared can never drift apart.
+// (They previously drifted: the comparison rendered the Action enum via %s as
+// "ROUTE_MAP_PERMIT" instead of "permit", so it never matched and every re-push
+// destructively removed and recreated the whole prefix list.)
+func (pm *PolicyManager) buildPrefixListLine(prefixList *client.BgpPrefixList) (string, error) {
 	actionStr := "permit"
 	if prefixList.Action == client.BgpRouteMapAction_ROUTE_MAP_DENY {
 		actionStr = "deny"
 	}
 
-	// Prefix list command
-	prefixListCmd := fmt.Sprintf("ip prefix-list %s seq %d %s %s",
+	line := fmt.Sprintf("ip prefix-list %s seq %d %s %s",
 		prefixList.Name, prefixList.Sequence, actionStr, prefixList.Prefix)
 
-	// Add length restrictions if specified - CORRECT FRR syntax: ge X le Y
+	// Length restrictions - CORRECT FRR syntax: ge X le Y
 	if prefixList.Ge > 0 && prefixList.Le > 0 {
-		// Validate ge <= le
 		if prefixList.Ge > prefixList.Le {
-			return nil, fmt.Errorf("invalid prefix list: ge (%d) cannot be greater than le (%d)", prefixList.Ge, prefixList.Le)
+			return "", fmt.Errorf("invalid prefix list: ge (%d) cannot be greater than le (%d)", prefixList.Ge, prefixList.Le)
 		}
-		prefixListCmd += fmt.Sprintf(" ge %d le %d", prefixList.Ge, prefixList.Le)
+		line += fmt.Sprintf(" ge %d le %d", prefixList.Ge, prefixList.Le)
 	} else if prefixList.Ge > 0 {
-		// Validate ge is meaningful
 		prefixLen := pm.getPrefixLength(prefixList.Prefix)
 		if prefixLen >= 0 && prefixList.Ge <= uint32(prefixLen) {
-			return nil, fmt.Errorf("invalid prefix list: ge (%d) must be greater than prefix length (%d)", prefixList.Ge, prefixLen)
+			return "", fmt.Errorf("invalid prefix list: ge (%d) must be greater than prefix length (%d)", prefixList.Ge, prefixLen)
 		}
-		prefixListCmd += fmt.Sprintf(" ge %d", prefixList.Ge)
+		line += fmt.Sprintf(" ge %d", prefixList.Ge)
 	} else if prefixList.Le > 0 {
-		prefixListCmd += fmt.Sprintf(" le %d", prefixList.Le)
+		line += fmt.Sprintf(" le %d", prefixList.Le)
 	}
 
-	commands = append(commands, prefixListCmd)
+	return line, nil
+}
 
-	// Exit configuration mode
-	commands = append(commands, "exit")
-
-	return commands, nil
+// generatePrefixListCommands generates FRR commands for prefix list configuration
+func (pm *PolicyManager) generatePrefixListCommands(prefixList *client.BgpPrefixList) ([]string, error) {
+	line, err := pm.buildPrefixListLine(prefixList)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"configure terminal", line, "exit"}, nil
 }
 
 // generateRemoveRouteMapCommands generates commands to remove a route map
@@ -984,13 +995,30 @@ func (pm *PolicyManager) generateRemoveRouteMapCommands(name string) []string {
 	}
 }
 
-// generateRemoveCommunityListCommands generates commands to remove a community list
+// generateRemoveCommunityListCommands generates commands to remove a community
+// list entirely (all sequences). Used for explicit removal and for the
+// add-with-cleanup path, where dropping all sequences of the name is intended.
 func (pm *PolicyManager) generateRemoveCommunityListCommands(name string) []string {
 	// Remove both standard and expanded types to be safe
 	return []string{
 		"configure terminal",
 		fmt.Sprintf("no bgp community-list standard %s", name),
 		fmt.Sprintf("no bgp community-list expanded %s", name),
+		"exit",
+	}
+}
+
+// generateRemoveCommunityListSeqCommands removes a single community-list
+// sequence (not the whole named list, which would drop sibling sequences).
+// The type defaults to "standard" to match isCommunityListConfigured/add.
+func (pm *PolicyManager) generateRemoveCommunityListSeqCommands(communityList *client.BgpCommunityList) []string {
+	communityType := "standard"
+	if communityList.Type != "" {
+		communityType = communityList.Type
+	}
+	return []string{
+		"configure terminal",
+		fmt.Sprintf("no bgp community-list %s %s seq %d", communityType, communityList.Name, communityList.Sequence),
 		"exit",
 	}
 }
@@ -1050,13 +1078,16 @@ func (pm *PolicyManager) isPrefixListConfigured(prefixList *client.BgpPrefixList
 		return false, fmt.Errorf("failed to get running configuration: %w", err)
 	}
 
-	// Simple check - look for prefix list in configuration
-	lines := strings.Split(output, "\n")
-	prefixListPrefix := fmt.Sprintf("ip prefix-list %s seq %d %s %s",
-		prefixList.Name, prefixList.Sequence, prefixList.Action, prefixList.Prefix)
+	// Compare against the exact line we would write, so any difference
+	// (action, prefix, ge/le) is detected and triggers an update. Using the
+	// shared builder guarantees this comparison matches the written config.
+	expected, err := pm.buildPrefixListLine(prefixList)
+	if err != nil {
+		return false, err
+	}
 
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), prefixListPrefix) {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) == expected {
 			return true, nil
 		}
 	}

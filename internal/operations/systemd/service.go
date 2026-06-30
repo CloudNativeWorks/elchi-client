@@ -134,11 +134,45 @@ func ServiceControl(ctx context.Context, serviceName string, action client.SubCo
 
 	logger.Debugf("Successfully performed %s on service %s", action, serviceName)
 
+	// systemctl's exit code only says the command was accepted, not that the
+	// unit stayed up. For start/restart/reload, confirm the service did not land
+	// in a definitively failed state (a unit that exits 0 on start then crashes
+	// would otherwise be reported as a successful start). We only reject the
+	// unambiguous bad states so a still-"activating" service is not false-failed.
+	switch action {
+	case client.SubCommandType_SUB_START, client.SubCommandType_SUB_RESTART, client.SubCommandType_SUB_RELOAD:
+		state := serviceActiveState(ctx, serviceName, runner)
+		if isFailedActiveState(state) {
+			logger.Errorf("%s on %s reported success but service state is %q", action, serviceName, state)
+			return nil, fmt.Errorf("%s on %s did not take effect: service state is %q", action, serviceName, state)
+		}
+	}
+
 	status, err := GetServiceStatus(ctx, serviceName, logger, runner)
 	if err != nil {
+		// The action (and state check) succeeded; we just couldn't read the
+		// detailed status. Return a minimal NON-nil status instead of (nil,nil),
+		// so callers don't mistake "couldn't read status" for a confirmed-clean
+		// result with no detail.
 		logger.Warnf("Service action successful but failed to get status: %v", err)
-		return nil, nil
+		return &client.ServiceStatus{Active: "unknown"}, nil
 	}
 
 	return status, nil
+}
+
+// serviceActiveState returns the trimmed `systemctl is-active` state for a unit
+// (e.g. "active", "activating", "inactive", "failed"). Errors are folded into
+// the returned string by systemctl itself (it prints the state and exits
+// non-zero for non-active units), so the caller inspects the string.
+func serviceActiveState(ctx context.Context, serviceName string, runner *cmdrunner.CommandsRunner) string {
+	out, _ := runner.RunWithOutputSNoErrLog(ctx, "systemctl", "is-active", serviceName)
+	return strings.TrimSpace(string(out))
+}
+
+// isFailedActiveState reports whether an is-active state is a definitive failure
+// for a unit that was just started/restarted/reloaded. Transient states like
+// "activating" are intentionally NOT treated as failures.
+func isFailedActiveState(state string) bool {
+	return state == "failed" || state == "inactive"
 }

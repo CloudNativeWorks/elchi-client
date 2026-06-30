@@ -8,6 +8,11 @@ const (
 	JournalLogPath  = "/var/log/journal"
 	ElchiPath       = "/etc/elchi"
 	ElchiLibPath    = "/var/lib/elchi"
+	// StateDir holds the last-known-desired config the control plane delivered
+	// (rsyslog/filebeat), persisted on each successful UPDATE and read by the
+	// reconcile loop to repair manually-deleted or drifted config. Writable by the
+	// elchi user directly (no sudo), like the rest of /var/lib/elchi.
+	StateDir = "/var/lib/elchi/state"
 	// ShieldConfigPath is elchi-shield's watched POLICY directory. The agent syncs
 	// the control-plane's config bundle here; shield self-watches it (fsnotify +
 	// atomic hot-reload). Must equal shield's --config-dir. ShieldFile.path values

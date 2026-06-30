@@ -37,16 +37,22 @@ func (s *Services) UpdateRsyslogConfig(ctx context.Context, cmd *client.Command)
 		return helper.NewErrorResponse(cmd, "rsyslog request is nil")
 	}
 
-	// Update configuration
+	// Record the requested config as the last-known-desired BEFORE applying it, so the
+	// reconcile loop always drives the live file TOWARD the newest request and can
+	// never momentarily revert a just-applied config (a persist-after-apply ordering
+	// leaves a window where reconcile sees the new live file but the old desired state
+	// and would roll it back). Best-effort: a persist failure must not fail the update.
+	if err := PersistRsyslogDesired(rsyslogReq); err != nil {
+		s.logger.Warnf("failed to persist desired rsyslog state for reconcile: %v", err)
+	}
+
+	// Update configuration. UpdateConfig already restarts rsyslog (and the
+	// syslog.socket) and returns an error if the restart fails, so we must NOT
+	// restart again here — the previous code bounced the service twice on every
+	// config update, doubling the log-loss window.
 	if err := rsyslog.UpdateConfig(ctx, rsyslogReq, s.logger, s.runner); err != nil {
 		s.logger.Errorf("failed to update rsyslog config: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to update config: %v", err))
-	}
-
-	// Restart service to apply changes
-	if err := rsyslog.RestartService(ctx, s.logger, s.runner); err != nil {
-		s.logger.Errorf("failed to restart rsyslog: %v", err)
-		return helper.NewErrorResponse(cmd, fmt.Sprintf("config updated but failed to restart service: %v", err))
 	}
 
 	// Get current status

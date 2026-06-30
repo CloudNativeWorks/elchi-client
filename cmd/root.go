@@ -5,9 +5,7 @@ import (
 	"os"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/config"
-	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var (
@@ -35,42 +33,20 @@ func init() {
 }
 
 func initConfig() {
+	// LoadConfig handles both an explicit --config path and default-path
+	// discovery (cwd, $HOME/.elchi, /etc/elchi) when cfgFile is empty. It reads
+	// env vars, unmarshals the file into the struct, applies defaults for
+	// anything missing, tolerates a missing file, and initializes the logger.
+	//
+	// The previous empty-path branch only called viper.ReadInConfig() WITHOUT
+	// Unmarshal, so a present config.yaml was silently ignored when --config was
+	// not passed and the client fell back to hard-coded defaults (wrong host /
+	// empty token). Funnelling both cases through LoadConfig fixes that.
 	var err error
-
-	// Load configuration
-	if cfgFile != "" {
-		Cfg, err = config.LoadConfig(cfgFile)
-		if err != nil {
-			fmt.Printf("Fatal: Configuration could not be loaded: %v\n", err)
-			os.Exit(1)
-		}
-	} else {
-		// Load default config
-		Cfg = config.DefaultConfig()
-
-		// Initialize logger with default config
-		if err := logger.Init(logger.Config{
-			Level:  Cfg.Logging.Level,
-			Format: Cfg.Logging.Format,
-			Module: "root",
-		}); err != nil {
-			fmt.Printf("Fatal: Logger could not be initialized: %v\n", err)
-			os.Exit(1)
-		}
-
-		// Configure Viper for future use
-		viper.SetConfigName("config")
-		viper.SetConfigType("yaml")
-		viper.AddConfigPath(".")
-
-		// Try to read config file if exists
-		if err := viper.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-				// Only exit if error is not "config file not found"
-				fmt.Printf("Fatal: Configuration file could not be read: %v\n", err)
-				os.Exit(1)
-			}
-		}
+	Cfg, err = config.LoadConfig(cfgFile)
+	if err != nil {
+		fmt.Printf("Fatal: Configuration could not be loaded: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Override client name if provided via command line flag

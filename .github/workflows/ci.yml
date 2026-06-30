@@ -1,0 +1,55 @@
+name: CI
+
+# Runs the formatting, vet and full test suite on every push and PR. The release
+# workflow only *builds*, so without this the test suite never ran in CI — which is
+# how a Linux-only test that was authored on macOS (and never executed there) could
+# sit broken on a branch while hiding a real bug. This job is the guard against that.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Track the version pinned in go.mod so CI and the build stay in lockstep.
+          go-version-file: go.mod
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential pkg-config libsystemd-dev
+
+      - name: Download dependencies
+        run: go mod download
+
+      # The envoy and waf package tests read their real DefaultBaseDir
+      # (/var/lib/elchi/{envoys,waf}) rather than a temp dir. Create them (empty,
+      # owned by the runner) so they pass instead of failing on a missing/unreadable
+      # directory — this is the documented "envoy/root caveat", handled here so the
+      # FULL suite can run green.
+      - name: Prepare elchi state dir for tests
+        run: |
+          sudo mkdir -p /var/lib/elchi/envoys /var/lib/elchi/waf
+          sudo chown -R "$(id -u):$(id -g)" /var/lib/elchi
+
+      - name: gofmt (must be clean)
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test (CGO + systemd)
+        run: CGO_ENABLED=1 go test -tags systemd ./...

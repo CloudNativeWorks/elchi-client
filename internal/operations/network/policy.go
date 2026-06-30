@@ -25,6 +25,10 @@ const (
 type PolicyManager struct {
 	netplanPath string
 	logger      *logger.Logger
+	// persistWarnings collects cases where the kernel policy rule was applied but
+	// the netplan file could NOT be updated — live now but diverging from netplan
+	// and wrong after reboot. Reported instead of silently swallowed.
+	persistWarnings []string
 }
 
 func NewPolicyManager(logger *logger.Logger) *PolicyManager {
@@ -32,6 +36,19 @@ func NewPolicyManager(logger *logger.Logger) *PolicyManager {
 		netplanPath: models.NetplanPath,
 		logger:      logger,
 	}
+}
+
+// addPersistWarning records (and logs) a kernel-applied-but-not-persisted policy.
+func (pm *PolicyManager) addPersistWarning(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	pm.logger.Warnf("%s", msg)
+	pm.persistWarnings = append(pm.persistWarnings, msg)
+}
+
+// PersistWarnings returns the netplan-persistence warnings accumulated during the
+// last ManagePolicies call (empty if everything was persisted).
+func (pm *PolicyManager) PersistWarnings() []string {
+	return pm.persistWarnings
 }
 
 // ManagePolicies handles routing policy operations (add/delete/replace)
@@ -83,8 +100,8 @@ func (pm *PolicyManager) addPolicy(policy *client.RoutingPolicy) error {
 	// Add to persistent config (netplan)
 	pm.logger.Debug("Adding policy to persistent config (netplan)")
 	if err := pm.addPolicyToPersistentConfig(policy); err != nil {
-		pm.logger.Warnf("Failed to persist policy to netplan: %v", err)
-		// Don't fail the operation, runtime policy was added successfully
+		// Runtime rule added; don't fail, but record the divergence (lost on reboot).
+		pm.addPersistWarning("policy from=%s table=%d priority=%d applied to kernel but not persisted to netplan (will be lost on reboot): %v", policy.From, policy.Table, policy.Priority, err)
 	} else {
 		pm.logger.Debug("Policy successfully persisted to netplan")
 	}
@@ -110,8 +127,9 @@ func (pm *PolicyManager) deletePolicy(policy *client.RoutingPolicy) error {
 	// Remove from persistent config
 	pm.logger.Debug("Removing policy from persistent config (netplan)")
 	if err := pm.removePolicyFromPersistentConfig(policy); err != nil {
-		pm.logger.Warnf("Failed to remove policy from persistent config: %v", err)
-		// Don't fail the operation, runtime policy was removed
+		// Runtime rule removed; don't fail, but record the divergence (rule still in
+		// netplan, re-created on reboot).
+		pm.addPersistWarning("policy from=%s table=%d priority=%d removed from kernel but not from netplan (will be re-created on reboot): %v", policy.From, policy.Table, policy.Priority, err)
 	} else {
 		pm.logger.Debug("Policy successfully removed from netplan")
 	}
@@ -132,7 +150,28 @@ func (pm *PolicyManager) replacePolicy(policy *client.RoutingPolicy) error {
 
 	// Add new policy
 	pm.logger.Debug("Adding new policy after deletion")
-	return pm.addRuntimePolicy(policy)
+	if err := pm.addRuntimePolicy(policy); err != nil {
+		return err
+	}
+
+	// Persist the replacement. A runtime-only replace left the netplan file
+	// holding the OLD rule, so networkd restored the stale rule on reboot.
+	// Remove any existing persisted entry for this policy first (avoid
+	// duplicates), then add the new one — mirroring addPolicy/deletePolicy.
+	//
+	// NOTE: like deleteRuntimePolicy, this matches on the policy's current
+	// fields, so a REPLACE that changes the rule's identity (From/To/Table while
+	// keeping Priority) cannot remove the superseded entry — that needs the old
+	// identity from the control plane, which the proto does not currently carry.
+	if err := pm.removePolicyFromPersistentConfig(policy); err != nil {
+		pm.logger.Warnf("Failed to clear prior persisted policy before replace: %v", err)
+	}
+	if err := pm.addPolicyToPersistentConfig(policy); err != nil {
+		// Runtime rule replaced; don't fail, but record the divergence.
+		pm.addPersistWarning("policy from=%s table=%d priority=%d replaced in kernel but not persisted to netplan (kernel/netplan diverged, stale rule restored on reboot): %v", policy.From, policy.Table, policy.Priority, err)
+	}
+
+	return nil
 }
 
 // addRuntimePolicy adds policy to netlink (ip rule add) - idempotent
@@ -370,11 +409,27 @@ func PolicyManage(cmd *client.Command, logger *logger.Logger) *client.CommandRes
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("policy management failed: %v", err))
 	}
 
+	// Policies applied to the kernel. Report any that failed to persist to netplan
+	// so the control plane can see the kernel/netplan divergence rather than a bare
+	// success.
+	message := "Policy operations applied"
+	netSuccess := true
+	if warnings := manager.PersistWarnings(); len(warnings) > 0 {
+		netSuccess = false
+		message = "Policies applied to kernel but not fully persisted: " + strings.Join(warnings, "; ")
+	}
+
 	return &client.CommandResponse{
 		Identity:  cmd.Identity,
 		CommandId: cmd.CommandId,
 		Success:   true,
 		Error:     "",
+		Result: &client.CommandResponse_Network{
+			Network: &client.ResponseNetwork{
+				Success: netSuccess,
+				Message: message,
+			},
+		},
 	}
 }
 

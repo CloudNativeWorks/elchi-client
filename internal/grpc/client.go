@@ -278,9 +278,14 @@ func (c *Client) createConnection(address string, params *connectionParams) erro
 		return fmt.Errorf("connection not ready, current state: %s - likely TLS/ALPN issue", finalState.String())
 	}
 
-	c.mu.Lock()
-	c.conn = conn
-	c.mu.Unlock()
+	// Store the new connection and close whatever it replaced. Without this, a
+	// reconnect that re-dials (e.g. the mainLoop's reconnect path, which does not
+	// Close() before re-Connecting) silently leaks the previous *grpc.ClientConn
+	// and its goroutines/FDs on every stream flap.
+	if old := c.replaceConn(conn); old != nil {
+		old.Close()
+		c.logger.Debug("closed superseded gRPC connection")
+	}
 
 	// Get connection info for detailed logging
 	connState := conn.GetState()
@@ -293,6 +298,22 @@ func (c *Client) createConnection(address string, params *connectionParams) erro
 	}).Info("GRPC connection established successfully")
 
 	return nil
+}
+
+// replaceConn atomically installs conn as the active connection and returns the
+// connection it superseded (nil if there was none, or if conn is already the
+// active one). The caller is responsible for Close()ing the returned connection.
+// Centralizing the swap here is what prevents the per-reconnect connection leak:
+// every dial that replaces the live connection closes the one before it.
+func (c *Client) replaceConn(conn *grpc.ClientConn) (old *grpc.ClientConn) {
+	c.mu.Lock()
+	old = c.conn
+	c.conn = conn
+	c.mu.Unlock()
+	if old == conn {
+		return nil
+	}
+	return old
 }
 
 // getTransportCredentials returns the appropriate transport credentials based on TLS setting

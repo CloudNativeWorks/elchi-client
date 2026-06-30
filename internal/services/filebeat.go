@@ -38,16 +38,21 @@ func (s *Services) UpdateFilebeatConfig(ctx context.Context, cmd *client.Command
 		return helper.NewErrorResponse(cmd, "filebeat request is nil")
 	}
 
-	// Update configuration
+	// Record the requested config as the last-known-desired BEFORE applying it, so the
+	// reconcile loop always drives the live file TOWARD the newest request and can
+	// never momentarily revert a just-applied config (a persist-after-apply ordering
+	// leaves a window where reconcile sees the new live file but the old desired state
+	// and would roll it back). Best-effort: a persist failure must not fail the update.
+	if err := PersistFilebeatDesired(filebeatReq); err != nil {
+		s.logger.Warnf("failed to persist desired filebeat state for reconcile: %v", err)
+	}
+
+	// Update configuration. UpdateConfig already restarts filebeat and returns an
+	// error if the restart fails, so we must NOT restart again here — the previous
+	// code bounced the service twice on every config update.
 	if err := filebeat.UpdateConfig(ctx, filebeatReq, s.logger, s.runner); err != nil {
 		s.logger.Errorf("failed to update filebeat config: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to update config: %v", err))
-	}
-
-	// Restart service to apply changes
-	if err := filebeat.RestartService(ctx, s.logger, s.runner); err != nil {
-		s.logger.Errorf("failed to restart filebeat: %v", err)
-		return helper.NewErrorResponse(cmd, fmt.Sprintf("config updated but failed to restart service: %v", err))
 	}
 
 	// Get current status

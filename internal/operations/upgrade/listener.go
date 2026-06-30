@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/cmdrunner"
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/systemd"
@@ -13,6 +14,17 @@ import (
 	"github.com/CloudNativeWorks/elchi-client/pkg/models"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
+
+// envoyBinaryPath returns the on-disk path of the envoy binary for a version.
+func envoyBinaryPath(version string) string {
+	return fmt.Sprintf("/var/lib/elchi/envoys/%s/envoy", version)
+}
+
+// replaceEnvoyVersionPath rewrites the envoy binary path from fromVersion to
+// toVersion in the given file content.
+func replaceEnvoyVersionPath(content, fromVersion, toVersion string) string {
+	return strings.ReplaceAll(content, envoyBinaryPath(fromVersion), envoyBinaryPath(toVersion))
+}
 
 // UpgradeResult contains the result of an upgrade operation
 type UpgradeResult struct {
@@ -44,10 +56,7 @@ func UpdateSystemdServiceVersion(serviceName, fromVersion, toVersion string, log
 	}
 
 	// Update version paths
-	oldVersionPath := fmt.Sprintf("/var/lib/elchi/envoys/%s/envoy", fromVersion)
-	newVersionPath := fmt.Sprintf("/var/lib/elchi/envoys/%s/envoy", toVersion)
-
-	updatedContent := strings.ReplaceAll(string(currentContent), oldVersionPath, newVersionPath)
+	updatedContent := replaceEnvoyVersionPath(string(currentContent), fromVersion, toVersion)
 
 	// Write updated service file
 	if err := os.WriteFile(systemdPath, []byte(updatedContent), 0644); err != nil {
@@ -69,10 +78,7 @@ func UpdateBootstrapVersion(serviceName, fromVersion, toVersion string, logger *
 	}
 
 	// Update version paths in bootstrap file
-	oldVersionPath := fmt.Sprintf("/var/lib/elchi/envoys/%s/envoy", fromVersion)
-	newVersionPath := fmt.Sprintf("/var/lib/elchi/envoys/%s/envoy", toVersion)
-
-	updatedContent := strings.ReplaceAll(string(currentContent), oldVersionPath, newVersionPath)
+	updatedContent := replaceEnvoyVersionPath(string(currentContent), fromVersion, toVersion)
 
 	// Update envoy-version metadata
 	oldVersionMetadata := fmt.Sprintf("value: %s", fromVersion)
@@ -97,33 +103,28 @@ func ReloadSystemdDaemon(ctx context.Context, runner *cmdrunner.CommandsRunner, 
 	return nil
 }
 
-// RestartService restarts the service gracefully or hard restart
+// RestartService restarts the service so the new binary takes over.
+//
+// A binary upgrade ALWAYS requires a full restart — there is no in-process
+// "graceful"/hot path here (the new binary cannot take over the running
+// process). The graceful flag is kept for API compatibility, but we no longer
+// report a "graceful restart" that never happened: the previous code ran an
+// identical SUB_RESTART in both branches yet told the control plane "graceful
+// restart completed", masking the connection drop.
 func RestartService(ctx context.Context, serviceName string, graceful bool, logger *logger.Logger, runner *cmdrunner.CommandsRunner) (string, error) {
 	serviceFile := serviceName + ".service"
 
-	var restartStatus string
-	var err error
-
 	if graceful {
-		// Graceful restart - using restart instead of reload because binary changes
-		logger.Infof("Performing graceful restart for service %s", serviceFile)
-		_, err = systemd.ServiceControl(ctx, serviceFile, client.SubCommandType_SUB_RESTART, logger, runner)
-		if err != nil {
-			return "", fmt.Errorf("failed to restart service: %w", err)
-		}
-		restartStatus = "graceful restart completed"
-	} else {
-		// Hard restart
-		logger.Infof("Performing hard restart for service %s", serviceFile)
-		_, err = systemd.ServiceControl(ctx, serviceFile, client.SubCommandType_SUB_RESTART, logger, runner)
-		if err != nil {
-			return "", fmt.Errorf("failed to restart service: %w", err)
-		}
-		restartStatus = "hard restart completed"
+		logger.Infof("Upgrade requires a full restart for %s (new binary); no hot-restart path available", serviceFile)
+	}
+	logger.Infof("Restarting service %s to activate the new binary", serviceFile)
+
+	if _, err := systemd.ServiceControl(ctx, serviceFile, client.SubCommandType_SUB_RESTART, logger, runner); err != nil {
+		return "", fmt.Errorf("failed to restart service: %w", err)
 	}
 
 	logger.Infof("Service %s restarted successfully", serviceFile)
-	return restartStatus, nil
+	return "restarted to activate new binary", nil
 }
 
 // VerifyServiceActive verifies that the service is running
@@ -153,35 +154,95 @@ func UpgradeListener(
 		return nil, err
 	}
 
-	// 2. Update systemd service file
-	systemdPath, err := UpdateSystemdServiceVersion(serviceName, fromVersion, toVersion, logger)
+	// 1b. Verify the TARGET binary is present before touching anything. Rewriting
+	// the unit/bootstrap and restarting onto a missing binary would stop the
+	// working old process and fail to start the new one — a guaranteed outage.
+	targetBinary := envoyBinaryPath(toVersion)
+	if _, err := os.Stat(targetBinary); err != nil {
+		return nil, fmt.Errorf("target envoy binary for version %s not found at %s: %w", toVersion, targetBinary, err)
+	}
+
+	// Capture the current unit + bootstrap bytes so we can roll back if any later
+	// step fails. Without this, a failed daemon-reload/restart/verify left the
+	// unit and bootstrap pointing at the (possibly broken) new version.
+	systemdPath := filepath.Join(models.SystemdPath, serviceName+".service")
+	bootstrapPath := filepath.Join(models.ElchiLibPath, "bootstraps", serviceName+".yaml")
+	origService, err := os.ReadFile(systemdPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read systemd service file: %w", err)
+	}
+	origBootstrap, err := os.ReadFile(bootstrapPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read bootstrap file: %w", err)
+	}
+
+	// rollback restores both files and restarts onto the old version. It uses a
+	// FRESH context (not ctx) so a cancelled command context — e.g. SIGTERM
+	// mid-upgrade — cannot prevent the host from being returned to a working
+	// state. The original error is returned to the caller.
+	rollback := func(reason error) error {
+		logger.Errorf("Upgrade of %s failed (%v); rolling back to version %s", serviceName, reason, fromVersion)
+		rbCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if werr := os.WriteFile(systemdPath, origService, 0644); werr != nil {
+			logger.Errorf("rollback: failed to restore systemd unit %s: %v", systemdPath, werr)
+		}
+		if werr := os.WriteFile(bootstrapPath, origBootstrap, 0644); werr != nil {
+			logger.Errorf("rollback: failed to restore bootstrap %s: %v", bootstrapPath, werr)
+		}
+
+		// The restored old unit only takes effect once systemd re-reads it. If the
+		// daemon-reload fails, systemd still holds the NEW (broken) unit in memory,
+		// so a restart here would start the broken version — exactly what rollback
+		// must avoid. Retry the reload, and only restart if it succeeded; otherwise
+		// leave the service as-is and shout for manual recovery (restarting onto a
+		// known-broken in-memory unit is strictly worse than not restarting).
+		reloadOK := false
+		for attempt := 1; attempt <= 3; attempt++ {
+			if rerr := ReloadSystemdDaemon(rbCtx, runner, logger); rerr != nil {
+				logger.Errorf("rollback: daemon-reload attempt %d/3 failed: %v", attempt, rerr)
+				continue
+			}
+			reloadOK = true
+			break
+		}
+		if !reloadOK {
+			logger.Errorf("rollback: daemon-reload did not succeed; NOT restarting %s to avoid loading the stale in-memory unit. Old unit files are restored on disk — run `systemctl daemon-reload && systemctl restart %s` manually to recover.", serviceName, serviceName)
+			return fmt.Errorf("%w (rollback incomplete: daemon-reload failed, manual `systemctl daemon-reload && systemctl restart %s` required)", reason, serviceName)
+		}
+		if _, rerr := systemd.ServiceControl(rbCtx, serviceName+".service", client.SubCommandType_SUB_RESTART, logger, runner); rerr != nil {
+			logger.Errorf("rollback: restart onto old version failed: %v", rerr)
+		}
+		return reason
+	}
+
+	// 2. Update systemd service file
+	if _, err := UpdateSystemdServiceVersion(serviceName, fromVersion, toVersion, logger); err != nil {
+		return nil, rollback(err)
 	}
 	result.SystemdServiceUpdated = systemdPath
 
 	// 3. Update bootstrap file
-	bootstrapPath, err := UpdateBootstrapVersion(serviceName, fromVersion, toVersion, logger)
-	if err != nil {
-		return nil, err
+	if _, err := UpdateBootstrapVersion(serviceName, fromVersion, toVersion, logger); err != nil {
+		return nil, rollback(err)
 	}
 	result.BootstrapFileUpdated = bootstrapPath
 
 	// 4. Reload systemd daemon
 	if err := ReloadSystemdDaemon(ctx, runner, logger); err != nil {
-		return nil, err
+		return nil, rollback(err)
 	}
 
 	// 5. Restart service
 	restartStatus, err := RestartService(ctx, serviceName, graceful, logger, runner)
 	if err != nil {
-		return nil, err
+		return nil, rollback(err)
 	}
 	result.RestartStatus = restartStatus
 
 	// 6. Verify service is active
 	if err := VerifyServiceActive(ctx, serviceName, runner); err != nil {
-		return nil, err
+		return nil, rollback(err)
 	}
 	result.ServiceActive = true
 

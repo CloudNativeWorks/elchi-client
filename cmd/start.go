@@ -51,6 +51,7 @@ type ClientSession struct {
 	rateLimiter  *rate.Limiter              // Rate limiter for requests
 	breaker      *gobreaker.CircuitBreaker  // Circuit breaker for error handling
 	heartbeat    *services.HeartbeatService // Heartbeat service for periodic pings
+	deduper      *commandDeduper            // Drops re-delivered commands (reconnect)
 }
 
 // SessionManager handles the lifecycle of a client session
@@ -94,6 +95,13 @@ func (m *SessionManager) Run() error {
 
 	// Start signal handler
 	go m.handleSignals()
+
+	// Start the config self-heal loop: it recreates a manually-deleted or drifted
+	// rsyslog/filebeat config from the last-known-desired state the control plane
+	// delivered. Self-contained (own runner) and bound to the process context, so it
+	// stops cleanly on shutdown.
+	reconciler := services.NewReconciler(m.logger)
+	go reconciler.Start(m.ctx)
 
 	return m.mainLoop()
 }
@@ -379,6 +387,7 @@ func (m *SessionManager) createSession() (*ClientSession, error) {
 		rateLimiter: rate.NewLimiter(rate.Limit(maxRequestsPerSecond), maxBurstSize),
 		breaker:     gobreaker.NewCircuitBreaker(breakerSettings),
 		heartbeat:   heartbeatService,
+		deduper:     newCommandDeduper(),
 	}
 
 	// Set callback for re-registration when controller reports client is not registered
@@ -696,6 +705,23 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 			continue
 		}
 
+		now := time.Now()
+
+		// Redelivery dedup: if this exact command-id was processed in the last few
+		// minutes (e.g. the control plane re-sent it after a reconnect because it
+		// never got the response), answer from cache instead of running the handler
+		// again — re-executing a non-idempotent op (deploy/undeploy) would be wrong.
+		if cached, ok := s.deduper.get(cmd.CommandId, now); ok {
+			s.log.Warnf("Duplicate command %s (%v); resending cached response without re-executing", cmd.CommandId, cmd.Type)
+			cached.Identity = buildResponseIdentity(cmd, sessionToken)
+			if err := stream.Send(cached); err != nil {
+				s.log.Error(fmt.Sprintf("Failed to resend cached response: %v", err))
+				errChan <- fmt.Errorf("send error: %w", err)
+				return
+			}
+			continue
+		}
+
 		// Process command and send response
 		response := s.cmdManager.HandleCommand(ctx, cmd)
 		if response == nil {
@@ -708,17 +734,10 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 
 		// Set response metadata
 		response.CommandId = cmd.CommandId
-		if cmd.Identity != nil {
-			response.Identity = &client.Identity{
-				ClientId:     cmd.Identity.ClientId,
-				SessionToken: sessionToken,
-				ClientName:   cmd.Identity.ClientName,
-			}
-		} else {
-			response.Identity = &client.Identity{
-				SessionToken: sessionToken,
-			}
-		}
+		response.Identity = buildResponseIdentity(cmd, sessionToken)
+
+		// Remember the response so a redelivery of this id is answered from cache.
+		s.deduper.remember(cmd.CommandId, response, now)
 
 		// Send response
 		if err := stream.Send(response); err != nil {
@@ -732,6 +751,22 @@ func (s *ClientSession) handleCommands(ctx context.Context, stream client.Comman
 			"type":       cmd.Type,
 			"success":    response.Success,
 		}).Info("Response sent")
+	}
+}
+
+// buildResponseIdentity builds the Identity stamped on an outgoing response. The
+// session token is always the CURRENT one (it can change across a reconnect, which
+// is why a cached response must have its Identity refreshed before resending).
+func buildResponseIdentity(cmd *client.Command, sessionToken string) *client.Identity {
+	if cmd.Identity != nil {
+		return &client.Identity{
+			ClientId:     cmd.Identity.ClientId,
+			SessionToken: sessionToken,
+			ClientName:   cmd.Identity.ClientName,
+		}
+	}
+	return &client.Identity{
+		SessionToken: sessionToken,
 	}
 }
 

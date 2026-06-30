@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/cmdrunner"
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/files"
@@ -38,6 +39,14 @@ type DeployState struct {
 
 func cleanupAndRollback(ctx context.Context, state DeployState, logger *logger.Logger, runner *cmdrunner.CommandsRunner) {
 	logger.Infof("Starting rollback for deployment")
+
+	// Rollback must run even if the original command context was already
+	// cancelled (e.g. SIGTERM mid-deploy). With the command ctx, every systemctl
+	// call below would immediately return ctx.Err() and the half-applied
+	// deployment (service/interface/files) would be orphaned. Use a fresh,
+	// bounded context for all cleanup steps instead.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	// Stop and disable service if it was started or enabled
 	if state.ServiceStarted || state.ServiceEnabled {
@@ -96,6 +105,14 @@ func validateDeploymentPrerequisites(ctx context.Context, deployReq *client.Requ
 			!(r >= '0' && r <= '9') && r != '-' && r != '_' {
 			return fmt.Errorf("invalid service name '%s': must contain only letters, numbers, hyphen, underscore", name)
 		}
+	}
+
+	// The envoy binary the unit will exec must already be on disk (it is delivered
+	// by a separate SET_VERSION command). Checking here fails fast with a clear,
+	// actionable error instead of creating the bootstrap/interface/unit and then
+	// rolling them all back when `systemctl start` can't find the binary.
+	if _, err := os.Stat(envoyBinaryPath(deployReq.GetVersion())); err != nil {
+		return missingBinaryError(deployReq.GetVersion())
 	}
 
 	// Check if port is already in use by another deployment

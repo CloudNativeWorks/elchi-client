@@ -3,12 +3,46 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
+	"time"
 
 	elchigrpc "github.com/CloudNativeWorks/elchi-client/internal/grpc"
 	"github.com/CloudNativeWorks/elchi-client/internal/services"
 	"github.com/CloudNativeWorks/elchi-client/pkg/helper"
+	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
+
+// commandTimeout is the default upper bound on how long a single command handler
+// may run. It exists to stop one hung handler (e.g. a blocked systemctl/exec or
+// a stuck download) from stalling the single command-processing loop forever.
+// Real operations finish in seconds to a couple of minutes; this only trips on
+// genuine hangs.
+const commandTimeout = 10 * time.Minute
+
+// downloadCommandTimeout is a longer ceiling for command types whose handlers
+// fetch binaries or config bundles over the network (envoy/WAF binaries, an
+// upgrade target, a deploy's artifacts, a shield bundle). A flat 10m ceiling can
+// cut off a legitimately large/slow download on a constrained edge link, so these
+// get a wider budget while still being bounded against a genuine hang.
+const downloadCommandTimeout = 30 * time.Minute
+
+// commandTimeoutFor returns the per-command-type handler timeout. Download-heavy
+// types get downloadCommandTimeout; everything else gets the default. The budget is
+// never shorter than the previous flat 10m, so this can only relax limits, not
+// tighten them.
+func commandTimeoutFor(cmdType client.CommandType) time.Duration {
+	switch cmdType {
+	case client.CommandType_DEPLOY,
+		client.CommandType_UPGRADE_LISTENER,
+		client.CommandType_ENVOY_VERSION,
+		client.CommandType_WAF_VERSION,
+		client.CommandType_SHIELD:
+		return downloadCommandTimeout
+	default:
+		return commandTimeout
+	}
+}
 
 func NewCommandRegistry(services *services.Services) *CommandRegistry {
 	registry := &CommandRegistry{
@@ -42,6 +76,7 @@ func NewCommandManagerWithGRPC(grpcClient *elchigrpc.Client) *CommandManager {
 	return &CommandManager{
 		registry: NewCommandRegistry(services),
 		services: services,
+		logger:   logger.NewLogger("command-manager"),
 	}
 }
 
@@ -54,11 +89,27 @@ func (r *CommandRegistry) GetHandler(cmdType client.CommandType) (CommandHandler
 	return handler, exists
 }
 
-func (m *CommandManager) HandleCommand(ctx context.Context, cmd *client.Command) *client.CommandResponse {
+func (m *CommandManager) HandleCommand(ctx context.Context, cmd *client.Command) (resp *client.CommandResponse) {
 	handler, exists := m.registry.GetHandler(cmd.Type)
 	if !exists {
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("unsupported command type: %v", cmd.Type))
 	}
+
+	// Bound each command so one hung handler can't stall the command loop. The
+	// budget depends on the command type (download-heavy types get longer).
+	ctx, cancel := context.WithTimeout(ctx, commandTimeoutFor(cmd.Type))
+	defer cancel()
+
+	// Recover from a panic inside any handler and turn it into a failure
+	// response. Previously a panic unwound past this point and killed the
+	// command-stream goroutine, dropping the gRPC stream and forcing a full
+	// reconnect + re-registration for a single malformed command.
+	defer func() {
+		if r := recover(); r != nil {
+			m.logger.Errorf("PANIC recovered handling %v command: %v\nStack: %s", cmd.Type, r, debug.Stack())
+			resp = helper.NewErrorResponse(cmd, fmt.Sprintf("internal error handling command: %v", r))
+		}
+	}()
 
 	return handler.Handle(ctx, cmd)
 }

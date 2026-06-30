@@ -7,16 +7,23 @@ import (
 	"strings"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/cmdrunner"
+	"github.com/CloudNativeWorks/elchi-client/internal/operations/common"
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/systemd"
 	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 	"gopkg.in/yaml.v3"
+	"sync"
 )
 
 const (
-	filebeatConfigPath = "/etc/filebeat/filebeat.yml"
-	filebeatService    = "filebeat"
+	ConfigPath      = "/etc/filebeat/filebeat.yml"
+	filebeatService = "filebeat"
 )
+
+// updateMu serializes UpdateConfig so a control-plane UPDATE and the reconcile loop
+// (a separate goroutine) can never stage to the shared temp path or restart the
+// service at the same time.
+var updateMu sync.Mutex
 
 // FilebeatConfig represents the full filebeat.yml structure
 type FilebeatConfig struct {
@@ -66,7 +73,7 @@ type ElasticsearchOutputConfig struct {
 
 // GetCurrentConfig reads the current filebeat configuration
 func GetCurrentConfig(logger *logger.Logger) (*client.RequestFilebeat, error) {
-	data, err := os.ReadFile(filebeatConfigPath)
+	data, err := os.ReadFile(ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read filebeat config: %w", err)
 	}
@@ -176,8 +183,11 @@ func GetCurrentConfig(logger *logger.Logger) (*client.RequestFilebeat, error) {
 	return protoConfig, nil
 }
 
-// UpdateConfig writes new filebeat configuration
-func UpdateConfig(ctx context.Context, config *client.RequestFilebeat, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+// RenderConfig builds the filebeat.yml content from the request. It is the single
+// source of truth for the rendered file, shared by UpdateConfig and the reconcile
+// loop (which compares it against the live file to detect drift), so the two can
+// never diverge.
+func RenderConfig(config *client.RequestFilebeat) ([]byte, error) {
 	// Build YAML config
 	filebeatConfig := FilebeatConfig{
 		FilebeatInputs: make([]FilebeatInputConfig, 0),
@@ -262,21 +272,31 @@ func UpdateConfig(ctx context.Context, config *client.RequestFilebeat, logger *l
 	// Marshal to YAML
 	data, err := yaml.Marshal(&filebeatConfig)
 	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Write config directly without backup
-	cmd := runner.SetCommandWithS(ctx, "tee", filebeatConfigPath)
-	cmd.Stdin = strings.NewReader(string(data))
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+	return data, nil
+}
+
+// UpdateConfig renders the filebeat config, writes it atomically (validated), and
+// restarts the service.
+func UpdateConfig(ctx context.Context, config *client.RequestFilebeat, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+
+	data, err := RenderConfig(config)
+	if err != nil {
+		return err
+	}
+
+	// Stage to a temp file, validate it with `filebeat test config`, then atomically
+	// rename it into place. This keeps an interrupted write or a rejected config from
+	// ever leaving a broken filebeat.yml that the following restart would load.
+	validate := func(ctx context.Context, tmpPath string) error {
+		return validateStagedConfig(ctx, tmpPath, logger, runner)
+	}
+	if err := common.AtomicReplaceFileWithS(ctx, runner, ConfigPath, string(data), "644", validate); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	// Set proper permissions
-	chmodCmd := runner.SetCommandWithS(ctx, "chmod", "644", filebeatConfigPath)
-	if err := chmodCmd.Run(); err != nil {
-		logger.Warnf("Failed to set permissions: %v", err)
 	}
 
 	logger.Infof("Filebeat configuration updated successfully")
@@ -287,6 +307,22 @@ func UpdateConfig(ctx context.Context, config *client.RequestFilebeat, logger *l
 		return fmt.Errorf("config updated but failed to restart service: %w", err)
 	}
 
+	return nil
+}
+
+// validateStagedConfig runs `filebeat test config -c <tmpPath>` to check the staged
+// config before it is committed. A genuine rejection returns an error (so the live
+// file is kept); if the validator itself can't run (e.g. binary absent or keystore
+// unavailable), it logs a warning and returns nil so the push still proceeds
+// (best-effort, matching shield).
+func validateStagedConfig(ctx context.Context, tmpPath string, logger *logger.Logger, runner *cmdrunner.CommandsRunner) error {
+	out, err := runner.RunWithOutputSNoErrLog(ctx, "filebeat", "test", "config", "-c", tmpPath)
+	switch common.ClassifyValidatorResult(err, string(out)) {
+	case common.ConfigInvalid:
+		return fmt.Errorf("filebeat config validation failed: %s", strings.TrimSpace(string(out)))
+	case common.ConfigValidatorUnavailable:
+		logger.Warnf("filebeat config validator could not run, proceeding without pre-flight validation: %s", strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 

@@ -171,6 +171,35 @@ func (vm *VtyshManager) WriteMemory() error {
 	return nil
 }
 
+// vtyshSyntaxErrorIndicators are the messages vtysh prints to STDOUT while still
+// exiting 0 when it rejects a configuration line. ExecuteSimpleSession must scan
+// for these before persisting with WriteMemory; otherwise a rejected command is
+// silently saved as if it had succeeded (the running-config keeps the good lines
+// and the control plane is told the whole batch applied).
+//
+// Only hard command-rejection messages are listed — NOT "not found" responses
+// (FRR answers "% Can't find ..." for those). That keeps idempotent "no ..."
+// cleanup commands, which legitimately target absent objects, from being treated
+// as failures.
+var vtyshSyntaxErrorIndicators = []string{
+	"% Invalid",
+	"% Incomplete",
+	"% Ambiguous",
+	"% Malformed",
+	"% Unknown command",
+}
+
+// findVtyshConfigError returns the first syntax-error indicator found in vtysh
+// output, or "" if none is present.
+func findVtyshConfigError(output string) string {
+	for _, indicator := range vtyshSyntaxErrorIndicators {
+		if strings.Contains(output, indicator) {
+			return indicator
+		}
+	}
+	return ""
+}
+
 // ExecuteSimpleSession executes commands in a single vtysh session with proper validation
 func (vm *VtyshManager) ExecuteSimpleSession(commands []string) error {
 	if len(commands) == 0 {
@@ -267,9 +296,11 @@ func (vm *VtyshManager) ExecuteSimpleSession(commands []string) error {
 			vm.logger.Warn(fmt.Sprintf("⚠️ FRR warnings:\n%s", output))
 		}
 
-		// Check for Unknown command errors in stdout
-		if strings.Contains(output, "% Unknown command:") {
-			return fmt.Errorf("FRR configuration error - Unknown commands found:\n%s", output)
+		// vtysh rejects bad config lines on STDOUT while exiting 0. Detect those
+		// here and fail BEFORE WriteMemory so a partially-applied/rejected batch
+		// is never persisted or reported as success.
+		if indicator := findVtyshConfigError(output); indicator != "" {
+			return fmt.Errorf("FRR configuration rejected (%s):\n%s", indicator, output)
 		}
 	}
 

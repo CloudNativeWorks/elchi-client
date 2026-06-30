@@ -28,6 +28,24 @@ type DeploymentCheckResult struct {
 	InterfaceChanged    bool
 	ServiceChanged      bool
 	ServiceNeedsRestart bool
+	// BinaryMissing is set when the versioned envoy binary the unit points at is
+	// absent. A restart would then fail with a generic systemd error; callers use
+	// this to emit a precise, actionable error (re-push the binary) instead.
+	BinaryMissing bool
+}
+
+// envoyBinaryPath returns the on-disk path of the versioned envoy binary a
+// deployment's unit executes.
+func envoyBinaryPath(version string) string {
+	return filepath.Join(models.ElchiLibPath, "envoys", version, "envoy")
+}
+
+// missingBinaryError builds the actionable error used everywhere a deploy/restart
+// can't proceed because the envoy binary is gone. It names the version + path and
+// tells the operator/control-plane the concrete recovery step, so a blind
+// deploy-retry loop is replaced by a clear "push the binary first" signal.
+func missingBinaryError(version string) error {
+	return fmt.Errorf("envoy binary for version %s is missing at %s; deploy the binary (SET_VERSION) before (re)deploying this service", version, envoyBinaryPath(version))
 }
 
 // CheckExistingDeployment checks if a deployment exists and if it needs updates
@@ -61,6 +79,20 @@ func CheckExistingDeployment(ctx context.Context, deployReq *client.RequestDeplo
 		// No existing deployment found
 		logger.Debugf("No existing deployment found for %s", serviceName)
 		return result, nil
+	}
+
+	// LoadState=loaded does NOT mean the deployment is usable: if the versioned
+	// envoy binary was deleted (or GC'd) the unit is dead. Without this check a
+	// re-deploy with identical config takes the Exists && !NeedsUpdate fast-path
+	// and reports success on a broken service. Marking it for update routes it
+	// through the restart path, turning a silent false-success into an honest
+	// failure (the restart will fail if the binary is genuinely gone).
+	binaryPath := envoyBinaryPath(deployReq.GetVersion())
+	if _, statErr := os.Stat(binaryPath); statErr != nil {
+		logger.Warnf("Envoy binary for %s missing at %s (%v); marking deployment for repair", serviceName, binaryPath, statErr)
+		result.NeedsUpdate = true
+		result.ServiceNeedsRestart = true
+		result.BinaryMissing = true
 	}
 
 	// Check bootstrap file changes
@@ -295,8 +327,14 @@ func ApplyDeploymentUpdates(ctx context.Context, deployReq *client.RequestDeploy
 		}
 	}
 
-	// Restart service if needed
+	// Restart service if needed. If the envoy binary is missing the restart is
+	// guaranteed to fail with an opaque systemd error, so return the precise,
+	// actionable error instead — the config files above were still updated, only the
+	// binary needs to be re-pushed.
 	if checkResult.ServiceNeedsRestart {
+		if checkResult.BinaryMissing {
+			return missingBinaryError(deployReq.GetVersion())
+		}
 		logger.Infof("Restarting service %s due to configuration changes", serviceName)
 		if err := runner.RunWithS(ctx, "systemctl", "restart", serviceName); err != nil {
 			return fmt.Errorf("failed to restart service: %w", err)
