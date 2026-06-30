@@ -18,6 +18,13 @@ const (
 	KernelTableLink = "/etc/iproute2/rt_tables.d/elchi.conf" // Kernel reads from here
 	MinTableID      = 100                                    // Elchi-managed tables start from 100
 	MaxTableID      = 999                                    // Elchi-managed tables end at 999
+
+	// Kernel reserved system tables. They fall *inside* the [MinTableID,MaxTableID]
+	// range, so the range check alone is not enough to keep Elchi cleanup away from
+	// them — they must be excluded explicitly (see isElchiManagedTableID).
+	SystemTableDefault = 253 // default
+	SystemTableMain    = 254 // main
+	SystemTableLocal   = 255 // local
 )
 
 type TableManager struct {
@@ -39,10 +46,10 @@ func (tm *TableManager) ManageRoutingTables(tables []*client.RoutingTableDefinit
 	// Filter only Elchi-managed tables (ID range 100-999)
 	var elchiTables []*client.RoutingTableDefinition
 	for _, table := range tables {
-		if table.Id >= MinTableID && table.Id <= MaxTableID {
+		if isElchiManagedTableID(int(table.Id)) {
 			elchiTables = append(elchiTables, table)
 		} else {
-			tm.logger.Warnf("Skipping table %d (%s): outside Elchi management range", table.Id, table.Name)
+			tm.logger.Warnf("Skipping table %d (%s): outside Elchi management range or reserved system table", table.Id, table.Name)
 		}
 	}
 
@@ -208,9 +215,9 @@ func (tm *TableManager) addTable(table *client.RoutingTableDefinition) error {
 		return fmt.Errorf("table definition is nil")
 	}
 
-	// Validate table ID range
-	if table.Id < MinTableID || table.Id > MaxTableID {
-		return fmt.Errorf("table ID %d outside Elchi management range (%d-%d)", table.Id, MinTableID, MaxTableID)
+	// Validate table ID range (system tables 253/254/255 are excluded)
+	if !isElchiManagedTableID(int(table.Id)) {
+		return fmt.Errorf("table ID %d outside Elchi management range (%d-%d) or reserved system table", table.Id, MinTableID, MaxTableID)
 	}
 
 	// Validate table name
@@ -305,10 +312,18 @@ func (tm *TableManager) deleteTable(table *client.RoutingTableDefinition) error 
 }
 
 // isElchiManagedTableID reports whether id falls in the range Elchi owns. The
-// system tables (main=254, local=255, default=253) are outside it and must
-// never be touched by table cleanup.
+// system tables (main=254, local=255, default=253) live inside the numeric
+// range but are excluded explicitly — they must never be touched by table
+// cleanup or registered as Elchi tables.
 func isElchiManagedTableID(id int) bool {
-	return id >= MinTableID && id <= MaxTableID
+	if id < MinTableID || id > MaxTableID {
+		return false
+	}
+	switch id {
+	case SystemTableDefault, SystemTableMain, SystemTableLocal:
+		return false
+	}
+	return true
 }
 
 // flushTableRoutesAndRules removes kernel routes in the given table and any
@@ -361,9 +376,9 @@ func (tm *TableManager) replaceTable(table *client.RoutingTableDefinition) error
 		return fmt.Errorf("table definition is nil")
 	}
 
-	// Validate table ID range
-	if table.Id < MinTableID || table.Id > MaxTableID {
-		return fmt.Errorf("table ID %d outside Elchi management range (%d-%d)", table.Id, MinTableID, MaxTableID)
+	// Validate table ID range (system tables 253/254/255 are excluded)
+	if !isElchiManagedTableID(int(table.Id)) {
+		return fmt.Errorf("table ID %d outside Elchi management range (%d-%d) or reserved system table", table.Id, MinTableID, MaxTableID)
 	}
 
 	// Validate table name

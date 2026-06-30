@@ -95,6 +95,13 @@ func (m *SessionManager) Run() error {
 	// Start signal handler
 	go m.handleSignals()
 
+	// Start the config self-heal loop: it recreates a manually-deleted or drifted
+	// rsyslog/filebeat config from the last-known-desired state the control plane
+	// delivered. Self-contained (own runner) and bound to the process context, so it
+	// stops cleanly on shutdown.
+	reconciler := services.NewReconciler(m.logger)
+	go reconciler.Start(m.ctx)
+
 	return m.mainLoop()
 }
 

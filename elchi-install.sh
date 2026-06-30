@@ -1341,6 +1341,11 @@ Cmnd_Alias FRR_CMDS = \
 Cmnd_Alias FILEBEAT_CMDS = \
  /usr/bin/tee /etc/filebeat/filebeat.yml, \
  /usr/bin/chmod 644 /etc/filebeat/filebeat.yml, \
+ /usr/bin/tee /etc/filebeat/.filebeat.yml.elchi-tmp, \
+ /usr/bin/chmod 644 /etc/filebeat/.filebeat.yml.elchi-tmp, \
+ /usr/bin/filebeat test config -c /etc/filebeat/.filebeat.yml.elchi-tmp, \
+ /usr/bin/mv -f /etc/filebeat/.filebeat.yml.elchi-tmp /etc/filebeat/filebeat.yml, \
+ /usr/bin/rm -f /etc/filebeat/.filebeat.yml.elchi-tmp, \
  /usr/bin/systemctl start filebeat, \
  /usr/bin/systemctl stop filebeat, \
  /usr/bin/systemctl restart filebeat, \
@@ -1353,6 +1358,11 @@ Cmnd_Alias FILEBEAT_CMDS = \
 Cmnd_Alias RSYSLOG_CMDS = \
  /usr/bin/tee /etc/rsyslog.d/50-elchi.conf, \
  /usr/bin/chmod 644 /etc/rsyslog.d/50-elchi.conf, \
+ /usr/bin/tee /etc/rsyslog.d/.50-elchi.conf.elchi-tmp, \
+ /usr/bin/chmod 644 /etc/rsyslog.d/.50-elchi.conf.elchi-tmp, \
+ /usr/sbin/rsyslogd -N1 -f /etc/rsyslog.d/.50-elchi.conf.elchi-tmp, \
+ /usr/bin/mv -f /etc/rsyslog.d/.50-elchi.conf.elchi-tmp /etc/rsyslog.d/50-elchi.conf, \
+ /usr/bin/rm -f /etc/rsyslog.d/.50-elchi.conf.elchi-tmp, \
  /usr/bin/systemctl start rsyslog, \
  /usr/bin/systemctl stop rsyslog, \
  /usr/bin/systemctl restart rsyslog, \
