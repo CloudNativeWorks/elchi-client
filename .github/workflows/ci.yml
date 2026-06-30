@@ -29,13 +29,14 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      # The envoy package tests read the real DefaultBaseDir (/var/lib/elchi/envoys)
-      # rather than a temp dir. Create it (empty, owned by the runner) so they pass
-      # instead of failing on a missing/unreadable directory — this is the documented
-      # "envoy/root caveat", handled here so the FULL suite can run green.
+      # The envoy and waf package tests read their real DefaultBaseDir
+      # (/var/lib/elchi/{envoys,waf}) rather than a temp dir. Create them (empty,
+      # owned by the runner) so they pass instead of failing on a missing/unreadable
+      # directory — this is the documented "envoy/root caveat", handled here so the
+      # FULL suite can run green.
       - name: Prepare elchi state dir for tests
         run: |
-          sudo mkdir -p /var/lib/elchi/envoys
+          sudo mkdir -p /var/lib/elchi/envoys /var/lib/elchi/waf
           sudo chown -R "$(id -u):$(id -g)" /var/lib/elchi
 
       - name: gofmt (must be clean)

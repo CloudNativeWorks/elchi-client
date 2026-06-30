@@ -1,6 +1,57 @@
 package rsyslog
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	client "github.com/CloudNativeWorks/elchi-proto/client"
+)
+
+func rsyslogReq(target, proto string, port int32) *client.RequestRsyslog {
+	return &client.RequestRsyslog{
+		RsyslogConfig: &client.RsyslogConfig{
+			RsyslogOutput: &client.RsyslogOutput{Target: target, Port: port, Protocol: proto},
+		},
+	}
+}
+
+// RenderConfig is the single source of truth for 50-elchi.conf, used both to write
+// the file AND by the reconcile loop to detect drift. It must be byte-stable for the
+// same input (else reconcile would flap), and must reject invalid input rather than
+// emit a broken config.
+func TestRsyslogRenderConfigDeterministicAndValid(t *testing.T) {
+	req := rsyslogReq("10.0.0.1", "tcp", 514)
+	first, err := RenderConfig(req)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		again, err := RenderConfig(req)
+		if err != nil || again != first {
+			t.Fatalf("RenderConfig not deterministic (i=%d, err=%v)", i, err)
+		}
+	}
+	for _, want := range []string{`target="10.0.0.1"`, `port="514"`, `protocol="tcp"`, "imfile"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("rendered config missing %q", want)
+		}
+	}
+}
+
+func TestRsyslogRenderConfigRejectsInvalid(t *testing.T) {
+	cases := map[string]*client.RequestRsyslog{
+		"empty target":  rsyslogReq("", "tcp", 514),
+		"bad protocol":  rsyslogReq("10.0.0.1", "sctp", 514),
+		"port too high": rsyslogReq("10.0.0.1", "tcp", 70000),
+		"port zero":     rsyslogReq("10.0.0.1", "tcp", 0),
+		"nil rsyslog":   {},
+	}
+	for name, req := range cases {
+		if _, err := RenderConfig(req); err == nil {
+			t.Errorf("%s: expected an error, got nil", name)
+		}
+	}
+}
 
 func TestExtractQuotedValue(t *testing.T) {
 	cases := []struct {

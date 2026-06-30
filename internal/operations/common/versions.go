@@ -12,7 +12,11 @@ import (
 // GetDownloadedVersions returns list of locally downloaded versions by scanning
 // the base directory for version directories containing the specified binary
 func GetDownloadedVersions(baseDir, binaryName string, logger *logrus.Entry) ([]string, error) {
-	var versions []string
+	// Non-nil empty slice: an empty result must serialize/marshal as [] and satisfy
+	// callers (and tests) that expect "empty, not nil". A nil here previously only
+	// surfaced when the base dir was readable-and-empty (otherwise a permission error
+	// masked it), making it an environment-dependent latent bug.
+	versions := make([]string, 0)
 
 	// Read directory entries
 	entries, err := os.ReadDir(baseDir)
