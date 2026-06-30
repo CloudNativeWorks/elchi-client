@@ -65,14 +65,18 @@ func (rm *RouteManagerNew) addRoute(route *client.Route) error {
 
 	if err := netlink.RouteAdd(netlinkRoute); err != nil {
 		if err == syscall.EEXIST {
-			rm.logger.Debugf("Route already exists: %s via %s", route.To, route.Via)
-			return nil
+			// The route is already in the kernel, but the netplan entry may be
+			// missing (e.g. a prior persist failed, or it was added manually).
+			// Fall through to persistence instead of returning early, otherwise
+			// the route is lost on reboot and every re-add keeps no-op'ing.
+			rm.logger.Debugf("Route already exists in kernel: %s via %s (ensuring persistence)", route.To, route.Via)
+		} else {
+			rm.logger.Debugf("netlink.RouteAdd failed: %v", err)
+			return fmt.Errorf("failed to add route: %w", err)
 		}
-		rm.logger.Debugf("netlink.RouteAdd failed: %v", err)
-		return fmt.Errorf("failed to add route: %w", err)
+	} else {
+		rm.logger.Debugf("Route successfully added to netlink")
 	}
-
-	rm.logger.Debugf("Route successfully added to netlink")
 
 	// Add to persistent netplan config
 	if err := rm.addRouteToPersistentConfig(route); err != nil {
@@ -141,6 +145,17 @@ func (rm *RouteManagerNew) replaceRoute(route *client.Route) error {
 
 	if err := netlink.RouteReplace(netlinkRoute); err != nil {
 		return fmt.Errorf("failed to replace route: %w", err)
+	}
+
+	rm.logger.Debugf("Route successfully replaced in netlink")
+
+	// Persist the replacement so the netplan file matches the kernel; otherwise
+	// the old route survives in the file and is restored on reboot.
+	if err := rm.replaceRouteInPersistentConfig(route); err != nil {
+		rm.logger.Warnf("Failed to persist replaced route to netplan: %v", err)
+		// Don't fail the operation, runtime route was replaced successfully.
+	} else {
+		rm.logger.Debugf("Replaced route successfully persisted to netplan")
 	}
 
 	return nil
@@ -324,6 +339,112 @@ type NetplanRouteEntry struct {
 	Onlink bool   `yaml:"on-link,omitempty"`
 }
 
+// routeEntryFromClient builds a netplan route entry from a client route.
+func routeEntryFromClient(route *client.Route) NetplanRouteEntry {
+	entry := NetplanRouteEntry{
+		To:     route.To,
+		Via:    route.Via,
+		Onlink: route.Onlink,
+	}
+	if route.Table != 0 {
+		entry.Table = int(route.Table)
+	}
+	if route.Metric != 0 {
+		entry.Metric = int(route.Metric)
+	}
+	if route.Scope != "" {
+		entry.Scope = route.Scope
+	}
+	return entry
+}
+
+// upsertRouteEntry appends entry to the interface's route list unless an entry
+// with the same To+Via+Onlink already exists. Returns true if it was added.
+func upsertRouteEntry(config *NetplanRouteConfig, iface string, entry NetplanRouteEntry) bool {
+	if config.Network.Ethernets == nil {
+		config.Network.Ethernets = make(map[string]NetplanRouteInterface)
+	}
+	ifConfig := config.Network.Ethernets[iface]
+	for _, existing := range ifConfig.Routes {
+		if existing.To == entry.To && existing.Via == entry.Via && existing.Onlink == entry.Onlink {
+			return false
+		}
+	}
+	ifConfig.Routes = append(ifConfig.Routes, entry)
+	config.Network.Ethernets[iface] = ifConfig
+	return true
+}
+
+// removeRoutesToDestination drops every route whose To matches `to` from the
+// interface. REPLACE keys on the destination (via/metric/etc may have changed),
+// so the stale persisted entry must be removed by destination, not by full
+// match. Returns true if anything was removed.
+func removeRoutesToDestination(config *NetplanRouteConfig, iface, to string) bool {
+	ifConfig, ok := config.Network.Ethernets[iface]
+	if !ok {
+		return false
+	}
+	kept := make([]NetplanRouteEntry, 0, len(ifConfig.Routes))
+	removed := false
+	for _, r := range ifConfig.Routes {
+		if r.To == to {
+			removed = true
+			continue
+		}
+		kept = append(kept, r)
+	}
+	ifConfig.Routes = kept
+	config.Network.Ethernets[iface] = ifConfig
+	return removed
+}
+
+// replaceRouteInPersistentConfig updates the netplan file for a REPLACE: it
+// removes any persisted route to the same destination and adds the new one.
+// Without this the netplan file keeps the OLD route and networkd restores the
+// stale value on reboot/`netplan apply` (silent divergence from the kernel).
+func (rm *RouteManagerNew) replaceRouteInPersistentConfig(route *client.Route) error {
+	if route.Interface == "" {
+		return fmt.Errorf("route must specify interface for netplan persistence")
+	}
+
+	routeFile := fmt.Sprintf("%s/99-elchi-route-%s.yaml", models.NetplanPath, route.Interface)
+
+	config := &NetplanRouteConfig{
+		Network: NetplanRouteNetwork{
+			Version:   2,
+			Renderer:  "networkd",
+			Ethernets: make(map[string]NetplanRouteInterface),
+		},
+	}
+	if data, err := os.ReadFile(routeFile); err == nil {
+		if err := yaml.Unmarshal(data, config); err != nil {
+			return fmt.Errorf("failed to parse existing route config: %w", err)
+		}
+	}
+
+	removeRoutesToDestination(config, route.Interface, route.To)
+	upsertRouteEntry(config, route.Interface, routeEntryFromClient(route))
+
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal route config: %w", err)
+	}
+
+	cmd := exec.Command("sudo", "tee", routeFile)
+	cmd.Stdin = strings.NewReader(string(data))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to write route config via sudo tee: %w", err)
+	}
+
+	chmodCmd := exec.Command("sudo", "chmod", "0600", routeFile)
+	if err := chmodCmd.Run(); err != nil {
+		rm.logger.Warnf("Failed to set permissions for %s: %v", routeFile, err)
+	}
+
+	rm.logger.Infof("Replaced route persisted to %s", routeFile)
+	return nil
+}
+
 // addRouteToPersistentConfig adds route to netplan persistent configuration
 func (rm *RouteManagerNew) addRouteToPersistentConfig(route *client.Route) error {
 	if route.Interface == "" {
@@ -346,45 +467,10 @@ func (rm *RouteManagerNew) addRouteToPersistentConfig(route *client.Route) error
 		yaml.Unmarshal(data, config)
 	}
 
-	// Initialize interface config if it doesn't exist
-	if config.Network.Ethernets == nil {
-		config.Network.Ethernets = make(map[string]NetplanRouteInterface)
+	// Build the entry and add it (no-op if an identical entry already exists).
+	if !upsertRouteEntry(config, route.Interface, routeEntryFromClient(route)) {
+		return nil // Route already exists
 	}
-
-	ifConfig, exists := config.Network.Ethernets[route.Interface]
-	if !exists {
-		ifConfig = NetplanRouteInterface{
-			Routes: []NetplanRouteEntry{},
-		}
-	}
-
-	// Convert client route to netplan format
-	netplanRoute := NetplanRouteEntry{
-		To:     route.To,
-		Via:    route.Via,
-		Onlink: route.Onlink,
-	}
-
-	if route.Table != 0 {
-		netplanRoute.Table = int(route.Table)
-	}
-	if route.Metric != 0 {
-		netplanRoute.Metric = int(route.Metric)
-	}
-	if route.Scope != "" {
-		netplanRoute.Scope = route.Scope
-	}
-
-	// Check if route already exists (avoid duplicates)
-	for _, existingRoute := range ifConfig.Routes {
-		if existingRoute.To == netplanRoute.To && existingRoute.Via == netplanRoute.Via && existingRoute.Onlink == netplanRoute.Onlink {
-			return nil // Route already exists
-		}
-	}
-
-	// Add the new route
-	ifConfig.Routes = append(ifConfig.Routes, netplanRoute)
-	config.Network.Ethernets[route.Interface] = ifConfig
 
 	// Write back to file
 	data, err := yaml.Marshal(config)

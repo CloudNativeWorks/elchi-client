@@ -37,16 +37,13 @@ func (s *Services) UpdateRsyslogConfig(ctx context.Context, cmd *client.Command)
 		return helper.NewErrorResponse(cmd, "rsyslog request is nil")
 	}
 
-	// Update configuration
+	// Update configuration. UpdateConfig already restarts rsyslog (and the
+	// syslog.socket) and returns an error if the restart fails, so we must NOT
+	// restart again here — the previous code bounced the service twice on every
+	// config update, doubling the log-loss window.
 	if err := rsyslog.UpdateConfig(ctx, rsyslogReq, s.logger, s.runner); err != nil {
 		s.logger.Errorf("failed to update rsyslog config: %v", err)
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("failed to update config: %v", err))
-	}
-
-	// Restart service to apply changes
-	if err := rsyslog.RestartService(ctx, s.logger, s.runner); err != nil {
-		s.logger.Errorf("failed to restart rsyslog: %v", err)
-		return helper.NewErrorResponse(cmd, fmt.Sprintf("config updated but failed to restart service: %v", err))
 	}
 
 	// Get current status

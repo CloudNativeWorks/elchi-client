@@ -132,7 +132,27 @@ func (pm *PolicyManager) replacePolicy(policy *client.RoutingPolicy) error {
 
 	// Add new policy
 	pm.logger.Debug("Adding new policy after deletion")
-	return pm.addRuntimePolicy(policy)
+	if err := pm.addRuntimePolicy(policy); err != nil {
+		return err
+	}
+
+	// Persist the replacement. A runtime-only replace left the netplan file
+	// holding the OLD rule, so networkd restored the stale rule on reboot.
+	// Remove any existing persisted entry for this policy first (avoid
+	// duplicates), then add the new one — mirroring addPolicy/deletePolicy.
+	//
+	// NOTE: like deleteRuntimePolicy, this matches on the policy's current
+	// fields, so a REPLACE that changes the rule's identity (From/To/Table while
+	// keeping Priority) cannot remove the superseded entry — that needs the old
+	// identity from the control plane, which the proto does not currently carry.
+	if err := pm.removePolicyFromPersistentConfig(policy); err != nil {
+		pm.logger.Warnf("Failed to clear prior persisted policy before replace: %v", err)
+	}
+	if err := pm.addPolicyToPersistentConfig(policy); err != nil {
+		pm.logger.Warnf("Failed to persist replaced policy to netplan: %v", err)
+	}
+
+	return nil
 }
 
 // addRuntimePolicy adds policy to netlink (ip rule add) - idempotent

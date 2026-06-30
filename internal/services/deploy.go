@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/cmdrunner"
 	"github.com/CloudNativeWorks/elchi-client/internal/operations/files"
@@ -38,6 +39,14 @@ type DeployState struct {
 
 func cleanupAndRollback(ctx context.Context, state DeployState, logger *logger.Logger, runner *cmdrunner.CommandsRunner) {
 	logger.Infof("Starting rollback for deployment")
+
+	// Rollback must run even if the original command context was already
+	// cancelled (e.g. SIGTERM mid-deploy). With the command ctx, every systemctl
+	// call below would immediately return ctx.Err() and the half-applied
+	// deployment (service/interface/files) would be orphaned. Use a fresh,
+	// bounded context for all cleanup steps instead.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	// Stop and disable service if it was started or enabled
 	if state.ServiceStarted || state.ServiceEnabled {

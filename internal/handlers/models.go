@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/CloudNativeWorks/elchi-client/internal/services"
+	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 )
 
@@ -18,6 +19,7 @@ type CommandRegistry struct {
 type CommandManager struct {
 	registry *CommandRegistry
 	services *services.Services
+	logger   *logger.Logger
 }
 
 type DeployCommandHandler struct {

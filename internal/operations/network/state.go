@@ -148,12 +148,10 @@ func getCurrentRoutes() ([]*client.Route, error) {
 	tableManager := NewTableManager(logger.NewLogger("network"))
 	tables, err := tableManager.GetCurrentTables()
 	if err != nil {
-		// Fallback to default tables if we can't get table list
+		// Fallback to the real system tables if we can't get the table list.
 		tables = []*client.RoutingTableDefinition{
 			{Id: 254, Name: "main"},
 			{Id: 253, Name: "default"},
-			{Id: 111, Name: "sadeee2"},
-			{Id: 144, Name: "sadasd"},
 		}
 	}
 

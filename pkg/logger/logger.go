@@ -257,5 +257,11 @@ func (l *Logger) WithError(err error) *logrus.Entry {
 func Fatalf(format string, args ...any) {
 	if globalLogger != nil {
 		globalLogger.Fatalf(format, args...)
+		return
 	}
+	// Logger not initialized yet: still surface the fatal error and exit
+	// non-zero. The previous no-op silently swallowed the message and let the
+	// process exit 0, masking the failure (e.g. a fatal during early startup).
+	fmt.Fprintf(os.Stderr, "FATAL: "+format+"\n", args...)
+	os.Exit(1)
 }

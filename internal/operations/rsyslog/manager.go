@@ -18,6 +18,32 @@ const (
 	syslogSocket      = "syslog.socket"
 )
 
+// extractQuotedValue returns the value assigned to key in a line of the form
+// `key="value"`. It tolerates malformed / hand-edited lines: it never panics
+// and returns ("", false) when the key or its quoted value is absent. The
+// previous implementation indexed Split(...)[1] directly, which panicked on an
+// unquoted hand-edited line and killed the whole command stream (a DoS via a
+// single GET_RSYSLOG_CONFIG against a manually-edited file).
+func extractQuotedValue(line, key string) (string, bool) {
+	idx := strings.Index(line, key)
+	if idx < 0 {
+		return "", false
+	}
+	rest := line[idx+len(key):]
+
+	open := strings.IndexByte(rest, '"')
+	if open < 0 {
+		return "", false
+	}
+	rest = rest[open+1:]
+
+	closeIdx := strings.IndexByte(rest, '"')
+	if closeIdx < 0 {
+		return "", false
+	}
+	return rest[:closeIdx], true
+}
+
 // GetCurrentConfig reads the current rsyslog configuration
 func GetCurrentConfig(logger *logger.Logger) (*client.RequestRsyslog, error) {
 	data, err := os.ReadFile(rsyslogConfigPath)
@@ -25,6 +51,12 @@ func GetCurrentConfig(logger *logger.Logger) (*client.RequestRsyslog, error) {
 		return nil, fmt.Errorf("failed to read rsyslog config: %w", err)
 	}
 
+	return parseRsyslogConfig(string(data)), nil
+}
+
+// parseRsyslogConfig extracts target/port/protocol from a 50-elchi.conf body.
+// It is pure and panic-free for any input, including hand-edited/garbage files.
+func parseRsyslogConfig(data string) *client.RequestRsyslog {
 	// Parse the config file to extract target, port, protocol
 	protoConfig := &client.RequestRsyslog{
 		RsyslogConfig: &client.RsyslogConfig{
@@ -33,7 +65,7 @@ func GetCurrentConfig(logger *logger.Logger) (*client.RequestRsyslog, error) {
 	}
 
 	// Parse lines to find action configuration
-	lines := strings.Split(string(data), "\n")
+	lines := strings.Split(data, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 
@@ -43,35 +75,25 @@ func GetCurrentConfig(logger *logger.Logger) (*client.RequestRsyslog, error) {
 		}
 
 		// Look for target
-		if strings.Contains(line, "target=") {
-			parts := strings.Split(line, "target=")
-			if len(parts) > 1 {
-				target := strings.Trim(strings.Split(parts[1], "\"")[1], "\"")
-				protoConfig.RsyslogConfig.RsyslogOutput.Target = target
-			}
+		if target, ok := extractQuotedValue(line, "target="); ok {
+			protoConfig.RsyslogConfig.RsyslogOutput.Target = target
 		}
 
 		// Look for port
-		if strings.Contains(line, "port=") {
-			parts := strings.Split(line, "port=")
-			if len(parts) > 1 {
-				var port int32
-				fmt.Sscanf(strings.Split(parts[1], "\"")[1], "%d", &port)
+		if portStr, ok := extractQuotedValue(line, "port="); ok {
+			var port int32
+			if _, err := fmt.Sscanf(portStr, "%d", &port); err == nil {
 				protoConfig.RsyslogConfig.RsyslogOutput.Port = port
 			}
 		}
 
 		// Look for protocol
-		if strings.Contains(line, "protocol=") {
-			parts := strings.Split(line, "protocol=")
-			if len(parts) > 1 {
-				protocol := strings.Trim(strings.Split(parts[1], "\"")[1], "\"")
-				protoConfig.RsyslogConfig.RsyslogOutput.Protocol = protocol
-			}
+		if protocol, ok := extractQuotedValue(line, "protocol="); ok {
+			protoConfig.RsyslogConfig.RsyslogOutput.Protocol = protocol
 		}
 	}
 
-	return protoConfig, nil
+	return protoConfig
 }
 
 // UpdateConfig writes new rsyslog configuration

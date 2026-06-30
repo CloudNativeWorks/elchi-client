@@ -63,6 +63,19 @@ func CheckExistingDeployment(ctx context.Context, deployReq *client.RequestDeplo
 		return result, nil
 	}
 
+	// LoadState=loaded does NOT mean the deployment is usable: if the versioned
+	// envoy binary was deleted (or GC'd) the unit is dead. Without this check a
+	// re-deploy with identical config takes the Exists && !NeedsUpdate fast-path
+	// and reports success on a broken service. Marking it for update routes it
+	// through the restart path, turning a silent false-success into an honest
+	// failure (the restart will fail if the binary is genuinely gone).
+	binaryPath := filepath.Join(models.ElchiLibPath, "envoys", deployReq.GetVersion(), "envoy")
+	if _, statErr := os.Stat(binaryPath); statErr != nil {
+		logger.Warnf("Envoy binary for %s missing at %s (%v); marking deployment for repair", serviceName, binaryPath, statErr)
+		result.NeedsUpdate = true
+		result.ServiceNeedsRestart = true
+	}
+
 	// Check bootstrap file changes
 	bootstrapPath := filepath.Join(models.ElchiLibPath, "bootstraps", filename+".yaml")
 	if changed, err := checkBootstrapChanged(bootstrapPath, deployReq.GetBootstrap(), logger); err != nil {

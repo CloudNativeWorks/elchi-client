@@ -19,6 +19,13 @@ func (s *Services) UndeployService(ctx context.Context, cmd *client.Command) *cl
 		return helper.NewErrorResponse(cmd, "undeploy payload is nil")
 	}
 
+	// Reject path-traversal / malformed names before they reach filepath.Join in
+	// the file-deletion step (deploy validates the name, undeploy did not).
+	if err := files.ValidateServiceName(undeployReq.GetName()); err != nil {
+		s.logger.Errorf("undeploy rejected: %v", err)
+		return helper.NewErrorResponse(cmd, err.Error())
+	}
+
 	// Acquire deployment lock to prevent race conditions
 	deploymentLock.Lock()
 	defer deploymentLock.Unlock()

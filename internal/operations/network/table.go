@@ -10,6 +10,7 @@ import (
 	"github.com/CloudNativeWorks/elchi-client/pkg/helper"
 	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
+	"github.com/vishvananda/netlink"
 )
 
 const (
@@ -277,6 +278,12 @@ func (tm *TableManager) deleteTable(table *client.RoutingTableDefinition) error 
 		return nil // Not an error, idempotent operation
 	}
 
+	// Flush the kernel routes in this table and any rules that point at it.
+	// Removing only the name->id definition leaves those routes/rules orphaned
+	// in the kernel (and the id can later be reused with a different name while
+	// the old routes still sit there).
+	tm.flushTableRoutesAndRules(int(table.Id))
+
 	// Write updated tables (or remove file if empty)
 	if len(updatedTables) == 0 {
 		// Remove the file if no tables left
@@ -295,6 +302,57 @@ func (tm *TableManager) deleteTable(table *client.RoutingTableDefinition) error 
 
 	tm.logger.Infof("Successfully deleted table %d (%s)", table.Id, table.Name)
 	return nil
+}
+
+// isElchiManagedTableID reports whether id falls in the range Elchi owns. The
+// system tables (main=254, local=255, default=253) are outside it and must
+// never be touched by table cleanup.
+func isElchiManagedTableID(id int) bool {
+	return id >= MinTableID && id <= MaxTableID
+}
+
+// flushTableRoutesAndRules removes kernel routes in the given table and any
+// policy rules that reference it. It is a no-op for tables outside the
+// Elchi-managed range so the system tables (main=254, local=255, default=253)
+// can never be flushed by a stray delete request. Failures are logged, not
+// fatal: a best-effort cleanup must not block removing the table definition.
+func (tm *TableManager) flushTableRoutesAndRules(tableID int) {
+	if !isElchiManagedTableID(tableID) {
+		tm.logger.Warnf("Refusing to flush table %d: outside Elchi-managed range %d-%d", tableID, MinTableID, MaxTableID)
+		return
+	}
+
+	// Delete routes in this table (same filtered list used by GetNetworkState).
+	routes, err := netlink.RouteListFiltered(netlink.FAMILY_ALL, &netlink.Route{Table: tableID}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		tm.logger.Warnf("Could not list routes in table %d for flushing: %v", tableID, err)
+	} else {
+		for i := range routes {
+			r := routes[i]
+			if delErr := netlink.RouteDel(&r); delErr != nil {
+				tm.logger.Warnf("Failed to delete route %v in table %d: %v", r.Dst, tableID, delErr)
+			}
+		}
+		tm.logger.Infof("Flushed %d route(s) from table %d", len(routes), tableID)
+	}
+
+	// Delete policy rules that reference this table.
+	rules, err := netlink.RuleList(netlink.FAMILY_ALL)
+	if err != nil {
+		tm.logger.Warnf("Could not list rules for table %d cleanup: %v", tableID, err)
+		return
+	}
+	for i := range rules {
+		if rules[i].Table != tableID {
+			continue
+		}
+		rule := rules[i]
+		if delErr := netlink.RuleDel(&rule); delErr != nil {
+			tm.logger.Warnf("Failed to delete rule referencing table %d: %v", tableID, delErr)
+		} else {
+			tm.logger.Infof("Removed rule referencing deleted table %d (prio %d)", tableID, rule.Priority)
+		}
+	}
 }
 
 // replaceTable replaces an existing table definition
