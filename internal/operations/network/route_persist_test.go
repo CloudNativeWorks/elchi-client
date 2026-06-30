@@ -88,6 +88,33 @@ func TestRemoveRoutesToDestination_ThenUpsert_ReplacesByDestination(t *testing.T
 	}
 }
 
+// DOCUMENTED BEHAVIOUR: REPLACE keys on the destination only, so when several
+// routes share the same destination (e.g. ECMP / failover with different gateways
+// or metrics), a REPLACE of that destination collapses ALL of them into the single
+// new entry. This is intentional given the current proto (a Route REPLACE carries
+// no old-identity to target one specific sibling), but it MUST stay a conscious,
+// tested choice: if the control-plane model ever allows multiple live routes to one
+// destination, REPLACE has to key on more than To (e.g. To+Via) instead.
+func TestRemoveRoutesToDestination_CollapsesMultipleSameDestination(t *testing.T) {
+	cfg := newRouteConfig()
+	// Two routes to the same destination (failover via different gateways).
+	upsertRouteEntry(cfg, "eth0", NetplanRouteEntry{To: "10.0.0.0/24", Via: "192.168.1.1", Metric: 100})
+	upsertRouteEntry(cfg, "eth0", NetplanRouteEntry{To: "10.0.0.0/24", Via: "192.168.1.2", Metric: 200})
+
+	if !removeRoutesToDestination(cfg, "eth0", "10.0.0.0/24") {
+		t.Fatal("expected removal of the destination entries")
+	}
+	upsertRouteEntry(cfg, "eth0", NetplanRouteEntry{To: "10.0.0.0/24", Via: "10.9.9.9", Metric: 5})
+
+	routes := cfg.Network.Ethernets["eth0"].Routes
+	if len(routes) != 1 {
+		t.Fatalf("REPLACE-by-destination should collapse both siblings into one, got %d: %+v", len(routes), routes)
+	}
+	if routes[0].Via != "10.9.9.9" {
+		t.Fatalf("surviving route should be the replacement, got %+v", routes[0])
+	}
+}
+
 func TestRemoveRoutesToDestination_NoMatch(t *testing.T) {
 	cfg := newRouteConfig()
 	upsertRouteEntry(cfg, "eth0", NetplanRouteEntry{To: "10.0.0.0/24", Via: "1.1.1.1"})

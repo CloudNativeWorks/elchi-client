@@ -1379,7 +1379,15 @@ Cmnd_Alias RSYSLOG_CMDS = \
  /usr/bin/systemctl disable syslog.socket, \
  /usr/bin/systemctl is-active syslog.socket
 
-elchi ALL=(ALL) NOPASSWD: ELCHI_CMDS, FRR_CMDS, FILEBEAT_CMDS, RSYSLOG_CMDS
+Cmnd_Alias LOGROTATE_CMDS = \
+ /usr/bin/tee /etc/logrotate.d/elchi, \
+ /usr/bin/chmod 644 /etc/logrotate.d/elchi, \
+ /usr/bin/tee /usr/local/bin/logrotate-5min.sh, \
+ /usr/bin/chmod 755 /usr/local/bin/logrotate-5min.sh, \
+ /usr/bin/tee /etc/cron.d/logrotate-5min, \
+ /usr/bin/chmod 644 /etc/cron.d/logrotate-5min
+
+elchi ALL=(ALL) NOPASSWD: ELCHI_CMDS, FRR_CMDS, FILEBEAT_CMDS, RSYSLOG_CMDS, LOGROTATE_CMDS
 Defaults:elchi !pam_session
 
 EOF

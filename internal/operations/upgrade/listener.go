@@ -190,8 +190,25 @@ func UpgradeListener(
 		if werr := os.WriteFile(bootstrapPath, origBootstrap, 0644); werr != nil {
 			logger.Errorf("rollback: failed to restore bootstrap %s: %v", bootstrapPath, werr)
 		}
-		if rerr := ReloadSystemdDaemon(rbCtx, runner, logger); rerr != nil {
-			logger.Errorf("rollback: daemon-reload failed: %v", rerr)
+
+		// The restored old unit only takes effect once systemd re-reads it. If the
+		// daemon-reload fails, systemd still holds the NEW (broken) unit in memory,
+		// so a restart here would start the broken version — exactly what rollback
+		// must avoid. Retry the reload, and only restart if it succeeded; otherwise
+		// leave the service as-is and shout for manual recovery (restarting onto a
+		// known-broken in-memory unit is strictly worse than not restarting).
+		reloadOK := false
+		for attempt := 1; attempt <= 3; attempt++ {
+			if rerr := ReloadSystemdDaemon(rbCtx, runner, logger); rerr != nil {
+				logger.Errorf("rollback: daemon-reload attempt %d/3 failed: %v", attempt, rerr)
+				continue
+			}
+			reloadOK = true
+			break
+		}
+		if !reloadOK {
+			logger.Errorf("rollback: daemon-reload did not succeed; NOT restarting %s to avoid loading the stale in-memory unit. Old unit files are restored on disk — run `systemctl daemon-reload && systemctl restart %s` manually to recover.", serviceName, serviceName)
+			return fmt.Errorf("%w (rollback incomplete: daemon-reload failed, manual `systemctl daemon-reload && systemctl restart %s` required)", reason, serviceName)
 		}
 		if _, rerr := systemd.ServiceControl(rbCtx, serviceName+".service", client.SubCommandType_SUB_RESTART, logger, runner); rerr != nil {
 			logger.Errorf("rollback: restart onto old version failed: %v", rerr)

@@ -107,6 +107,14 @@ func validateDeploymentPrerequisites(ctx context.Context, deployReq *client.Requ
 		}
 	}
 
+	// The envoy binary the unit will exec must already be on disk (it is delivered
+	// by a separate SET_VERSION command). Checking here fails fast with a clear,
+	// actionable error instead of creating the bootstrap/interface/unit and then
+	// rolling them all back when `systemctl start` can't find the binary.
+	if _, err := os.Stat(envoyBinaryPath(deployReq.GetVersion())); err != nil {
+		return missingBinaryError(deployReq.GetVersion())
+	}
+
 	// Check if port is already in use by another deployment
 	activeDeploymentsMu.RLock()
 	if existingService, exists := activeDeployments[deployReq.GetPort()]; exists {

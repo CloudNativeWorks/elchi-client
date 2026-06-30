@@ -2,10 +2,56 @@ package services
 
 import (
 	"testing"
+	"time"
 
+	"github.com/CloudNativeWorks/elchi-client/pkg/logger"
 	client "github.com/CloudNativeWorks/elchi-proto/client"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestResolveReconcileInterval(t *testing.T) {
+	t.Setenv(reconcileIntervalEnv, "")
+	if d, warn := resolveReconcileInterval(); d != ReconcileInterval || warn != "" {
+		t.Errorf("unset: got (%v,%q), want default and no warning", d, warn)
+	}
+
+	t.Setenv(reconcileIntervalEnv, "30s")
+	if d, warn := resolveReconcileInterval(); d != 30*time.Second || warn != "" {
+		t.Errorf("valid: got (%v,%q), want 30s and no warning", d, warn)
+	}
+
+	t.Setenv(reconcileIntervalEnv, "0")
+	if d, _ := resolveReconcileInterval(); d > 0 {
+		t.Errorf("zero should disable (return <=0), got %v", d)
+	}
+
+	t.Setenv(reconcileIntervalEnv, "not-a-duration")
+	if d, warn := resolveReconcileInterval(); d != ReconcileInterval || warn == "" {
+		t.Errorf("malformed: want default + warning, got (%v,%q)", d, warn)
+	}
+}
+
+func TestReconcilerFailureDedupe(t *testing.T) {
+	if err := logger.Init(logger.Config{Level: "error", Format: "text", Module: "test"}); err != nil {
+		t.Fatalf("logger init: %v", err)
+	}
+	r := NewReconciler(logger.NewLogger("reconcile-test"))
+
+	r.reportFailure("rsyslog", "boom")
+	if r.lastFailure["rsyslog"] != "boom" {
+		t.Fatal("first failure should be recorded")
+	}
+	// A different text updates the recorded state.
+	r.reportFailure("rsyslog", "boom2")
+	if r.lastFailure["rsyslog"] != "boom2" {
+		t.Fatal("changed failure text should update the dedupe state")
+	}
+	// A clean pass clears it, so a later failure is reported again.
+	r.clearFailure("rsyslog")
+	if _, ok := r.lastFailure["rsyslog"]; ok {
+		t.Fatal("clearFailure did not reset dedupe state")
+	}
+}
 
 func TestNeedsReassert(t *testing.T) {
 	tests := []struct {

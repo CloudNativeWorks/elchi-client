@@ -18,13 +18,34 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ReconcileInterval is how often the self-heal pass runs.
+// ReconcileInterval is the default self-heal cadence. Override with the
+// ELCHI_RECONCILE_INTERVAL env var (any Go duration, e.g. "30s", "2m"); a value
+// <= 0 disables the reconcile loop entirely.
 const ReconcileInterval = 1 * time.Minute
+
+// reconcileIntervalEnv names the env var that overrides ReconcileInterval.
+const reconcileIntervalEnv = "ELCHI_RECONCILE_INTERVAL"
 
 const (
 	rsyslogDesiredFile  = "rsyslog.pb"
 	filebeatDesiredFile = "filebeat.pb"
 )
+
+// resolveReconcileInterval reads the interval override from the environment. It
+// returns the default when unset, and an error string (for logging) plus the
+// default when the value is malformed. A parsed value <= 0 is returned as-is and
+// means "disabled".
+func resolveReconcileInterval() (time.Duration, string) {
+	raw := os.Getenv(reconcileIntervalEnv)
+	if raw == "" {
+		return ReconcileInterval, ""
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return ReconcileInterval, fmt.Sprintf("invalid %s=%q (%v), using default %s", reconcileIntervalEnv, raw, err, ReconcileInterval)
+	}
+	return d, ""
+}
 
 // Reconciler periodically repairs manually-deleted or drifted rsyslog/filebeat
 // config by re-asserting the last-known-desired config the control plane delivered.
@@ -36,22 +57,52 @@ const (
 type Reconciler struct {
 	logger *logger.Logger
 	runner *cmdrunner.CommandsRunner
+	// lastFailure dedupes repeated re-apply failures so a persistently-unappliable
+	// config logged once does not spam the log every tick. Keyed by subsystem; the
+	// entry is cleared on success or when the failure text changes.
+	lastFailure map[string]string
 }
 
 // NewReconciler builds a reconciler with its own command runner.
 func NewReconciler(baseLogger *logger.Logger) *Reconciler {
 	return &Reconciler{
-		logger: baseLogger,
-		runner: cmdrunner.NewCommandsRunner(),
+		logger:      baseLogger,
+		runner:      cmdrunner.NewCommandsRunner(),
+		lastFailure: make(map[string]string),
 	}
+}
+
+// reportFailure logs a re-apply failure only the first time it is seen (or when its
+// text changes), so a config that keeps failing every tick is not logged on repeat.
+func (r *Reconciler) reportFailure(subsystem, msg string) {
+	if r.lastFailure[subsystem] == msg {
+		return // already reported this exact failure; stay quiet until it changes
+	}
+	r.lastFailure[subsystem] = msg
+	r.logger.Errorf("%s", msg)
+}
+
+// clearFailure resets the dedupe state for a subsystem after a clean pass, so a
+// future failure is logged again.
+func (r *Reconciler) clearFailure(subsystem string) {
+	delete(r.lastFailure, subsystem)
 }
 
 // Start runs the reconcile loop until ctx is cancelled.
 func (r *Reconciler) Start(ctx context.Context) {
 	defer helper.RecoverPanic(r.logger, "reconcile-loop")
 
-	r.logger.Infof("Config reconcile loop started (interval %s)", ReconcileInterval)
-	ticker := time.NewTicker(ReconcileInterval)
+	interval, warn := resolveReconcileInterval()
+	if warn != "" {
+		r.logger.Warn(warn)
+	}
+	if interval <= 0 {
+		r.logger.Infof("Config reconcile loop disabled via %s", reconcileIntervalEnv)
+		return
+	}
+
+	r.logger.Infof("Config reconcile loop started (interval %s)", interval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -70,6 +121,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	r.reconcileRsyslog(ctx)
 	r.reconcileFilebeat(ctx)
+	r.reconcileLogrotate(ctx)
 }
 
 // needsReassert is the pure reconcile decision: re-apply only when the control
@@ -94,7 +146,8 @@ func (r *Reconciler) reconcileRsyslog(ctx context.Context) {
 
 	want, err := rsyslog.RenderConfig(desired)
 	if err != nil {
-		r.logger.Warnf("reconcile rsyslog: could not render desired config: %v", err)
+		// A persisted config that won't render repeats every tick — dedupe the log.
+		r.reportFailure("rsyslog", fmt.Sprintf("reconcile rsyslog: could not render desired config: %v", err))
 		return
 	}
 
@@ -105,6 +158,7 @@ func (r *Reconciler) reconcileRsyslog(ctx context.Context) {
 	}
 
 	if !needsReassert(true, liveExists, bytes.Equal(live, []byte(want))) {
+		r.clearFailure("rsyslog") // in sync — reset dedupe so a future failure logs again
 		return
 	}
 
@@ -115,9 +169,10 @@ func (r *Reconciler) reconcileRsyslog(ctx context.Context) {
 	}
 
 	if err := rsyslog.UpdateConfig(ctx, desired, r.logger, r.runner); err != nil {
-		r.logger.Errorf("reconcile rsyslog: re-apply failed: %v", err)
+		r.reportFailure("rsyslog", fmt.Sprintf("reconcile rsyslog: re-apply failed: %v", err))
 		return
 	}
+	r.clearFailure("rsyslog")
 	r.logger.Infof("reconcile rsyslog: config repaired")
 }
 
@@ -133,7 +188,8 @@ func (r *Reconciler) reconcileFilebeat(ctx context.Context) {
 
 	want, err := filebeat.RenderConfig(desired)
 	if err != nil {
-		r.logger.Warnf("reconcile filebeat: could not render desired config: %v", err)
+		// A persisted config that won't render repeats every tick — dedupe the log.
+		r.reportFailure("filebeat", fmt.Sprintf("reconcile filebeat: could not render desired config: %v", err))
 		return
 	}
 
@@ -144,6 +200,7 @@ func (r *Reconciler) reconcileFilebeat(ctx context.Context) {
 	}
 
 	if !needsReassert(true, liveExists, bytes.Equal(live, want)) {
+		r.clearFailure("filebeat") // in sync — reset dedupe so a future failure logs again
 		return
 	}
 
@@ -154,9 +211,10 @@ func (r *Reconciler) reconcileFilebeat(ctx context.Context) {
 	}
 
 	if err := filebeat.UpdateConfig(ctx, desired, r.logger, r.runner); err != nil {
-		r.logger.Errorf("reconcile filebeat: re-apply failed: %v", err)
+		r.reportFailure("filebeat", fmt.Sprintf("reconcile filebeat: re-apply failed: %v", err))
 		return
 	}
+	r.clearFailure("filebeat")
 	r.logger.Infof("reconcile filebeat: config repaired")
 }
 

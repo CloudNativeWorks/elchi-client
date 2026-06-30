@@ -18,12 +18,30 @@ import (
 
 type RouteManagerNew struct {
 	logger *logger.Logger
+	// persistWarnings collects cases where the kernel route was applied but the
+	// netplan file could NOT be updated. Such a route is live now but will be lost
+	// on reboot, so the divergence must be reported to the control plane instead of
+	// being swallowed as a silent success.
+	persistWarnings []string
 }
 
 func NewRouteManagerNew(logger *logger.Logger) *RouteManagerNew {
 	return &RouteManagerNew{
 		logger: logger,
 	}
+}
+
+// addPersistWarning records (and logs) a kernel-applied-but-not-persisted route.
+func (rm *RouteManagerNew) addPersistWarning(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	rm.logger.Warnf("%s", msg)
+	rm.persistWarnings = append(rm.persistWarnings, msg)
+}
+
+// PersistWarnings returns the netplan-persistence warnings accumulated during the
+// last ManageRoutes call (empty if everything was persisted).
+func (rm *RouteManagerNew) PersistWarnings() []string {
+	return rm.persistWarnings
 }
 
 // ManageRoutes handles route operations (add/delete/replace)
@@ -80,8 +98,9 @@ func (rm *RouteManagerNew) addRoute(route *client.Route) error {
 
 	// Add to persistent netplan config
 	if err := rm.addRouteToPersistentConfig(route); err != nil {
-		rm.logger.Warnf("Failed to persist route to netplan: %v", err)
-		// Don't fail the operation, runtime route was added successfully
+		// Runtime route was added successfully, so don't fail the operation, but
+		// record the divergence: this route will NOT survive a reboot.
+		rm.addPersistWarning("route to %s via %s applied to kernel but not persisted to netplan (will be lost on reboot): %v", route.To, route.Via, err)
 	} else {
 		rm.logger.Debugf("Route successfully persisted to netplan")
 	}
@@ -118,8 +137,9 @@ func (rm *RouteManagerNew) deleteRoute(route *client.Route) error {
 
 	// Remove from persistent config
 	if err := rm.removeRouteFromPersistentConfig(route); err != nil {
-		rm.logger.Warnf("Failed to remove route from persistent config: %v", err)
-		// Don't fail the operation, runtime route was removed
+		// Runtime route was removed, so don't fail the operation, but record the
+		// divergence: the route is still in netplan and will be re-created on reboot.
+		rm.addPersistWarning("route to %s via %s removed from kernel but not from netplan (will be re-created on reboot): %v", route.To, route.Via, err)
 	} else {
 		rm.logger.Debugf("Route successfully removed from netplan")
 	}
@@ -152,8 +172,10 @@ func (rm *RouteManagerNew) replaceRoute(route *client.Route) error {
 	// Persist the replacement so the netplan file matches the kernel; otherwise
 	// the old route survives in the file and is restored on reboot.
 	if err := rm.replaceRouteInPersistentConfig(route); err != nil {
-		rm.logger.Warnf("Failed to persist replaced route to netplan: %v", err)
-		// Don't fail the operation, runtime route was replaced successfully.
+		// Runtime route was replaced successfully, so don't fail the operation, but
+		// record the divergence: the kernel and netplan now disagree and the stale
+		// route will be restored on reboot.
+		rm.addPersistWarning("route to %s via %s replaced in kernel but not persisted to netplan (kernel/netplan diverged, stale route restored on reboot): %v", route.To, route.Via, err)
 	} else {
 		rm.logger.Debugf("Replaced route successfully persisted to netplan")
 	}
@@ -250,11 +272,27 @@ func RouteManage(cmd *client.Command, logger *logger.Logger) *client.CommandResp
 		return helper.NewErrorResponse(cmd, fmt.Sprintf("route management failed: %v", err))
 	}
 
+	// Routes applied to the kernel. If any failed to persist to netplan, the change
+	// is live but will not survive a reboot — report that explicitly instead of a
+	// bare success so the control plane can see the kernel/netplan divergence.
+	message := "Route operations applied"
+	netSuccess := true
+	if warnings := manager.PersistWarnings(); len(warnings) > 0 {
+		netSuccess = false
+		message = "Routes applied to kernel but not fully persisted: " + strings.Join(warnings, "; ")
+	}
+
 	return &client.CommandResponse{
 		Identity:  cmd.Identity,
 		CommandId: cmd.CommandId,
 		Success:   true,
 		Error:     "",
+		Result: &client.CommandResponse_Network{
+			Network: &client.ResponseNetwork{
+				Success: netSuccess,
+				Message: message,
+			},
+		},
 	}
 }
 
